@@ -90,6 +90,9 @@
  #define RCC_AHB2ENR     *((volatile uint32_t *) 0x4002104C) // For GPIOA, GPIOF
  #define RCC_APB1ENR1    *((volatile uint32_t *) 0x40021058) // For TIM6
  #define RCC_APB2ENR     *((volatile uint32_t *) 0x40021060) // For TIM15
+#define RCC_CCIPR1      *((volatile uint32_t *) 0x40021088) // Added for ADC
+
+
 
  // --- GPIOA (LEDs) Registers (PA3 = Green, PA4 = Blue, PA5 = Red) ---
  // Base: 0x4202 0000
@@ -117,6 +120,76 @@
  // --- PI 2: TIM15 (IC/OC Timer) Registers ---
 // Base: 0x4001 4000
 #define RCC_APB2ENR_TIM15EN (1 << 16) // TIM15 Clock Enable Bit
+
+
+typedef struct {
+    volatile uint32_t ISR;      // 0x00
+    volatile uint32_t IER;      // 0x04
+    volatile uint32_t CR;       // 0x08
+    volatile uint32_t CFGR;     // 0x0C
+    volatile uint32_t CFG2;     // 0x10
+    volatile uint32_t SMPR1;    // 0x14
+    volatile uint32_t SMPR2;    // 0x18
+    uint32_t reserved2;         // 0x1C
+    volatile uint32_t TR1;      // 0x20
+    volatile uint32_t TR2;      // 0x24
+    volatile uint32_t TR3;      // 0x28
+    uint32_t reserved3;         // 0x2C
+    volatile uint32_t SQR1;     // 0x30
+    volatile uint32_t SQR2;     // 0x34
+    volatile uint32_t SQR3;     // 0x38
+    volatile uint32_t SQR4;     // 0x3C
+    volatile uint32_t DR;       // 0x40
+    uint32_t reserved4[2];      // 0x44-0x48
+    volatile uint32_t JSQR;     // 0x4C
+    uint32_t reserved5[4];      // 0x50-0x5C
+    volatile uint32_t OFR1;     // 0x60
+    volatile uint32_t OFR2;     // 0x64
+    volatile uint32_t OFR3;     // 0x68
+    volatile uint32_t OFR4;     // 0x6C
+    uint32_t reserved6[4];      // 0x70-0x7C
+    volatile uint32_t JDR1;     // 0x80
+    volatile uint32_t JDR2;     // 0x84
+    volatile uint32_t JDR3;     // 0x88
+    volatile uint32_t JDR4;     // 0x8C
+    uint32_t reserved7[4];      // 0x90-0x9C
+    volatile uint32_t AWD2CR;   // 0xA0
+    volatile uint32_t AWD3CR;   // 0xA4
+    uint32_t reserved8[2];      // 0xA8-0xAC
+    volatile uint32_t DIFSEL;   // 0xB0
+    volatile uint32_t CALFACT;  // 0xB4
+} ADCType;
+
+typedef struct {
+    volatile uint32_t CSR;      // 0x00
+    uint32_t reserved1;         // 0x04
+    volatile uint32_t CCR;      // 0x08
+    volatile uint32_t CDR;      // 0x0C
+} ADCCommon;
+
+typedef struct {
+    volatile uint32_t MODER;
+    volatile uint32_t OTYPER;
+    volatile uint32_t OSPEEDR;
+    volatile uint32_t PUPDR;
+    volatile uint32_t IDR;
+    volatile uint32_t ODR;
+    volatile uint32_t BSRR;
+    volatile uint32_t LCKR;
+    volatile uint32_t AFRL;
+    volatile uint32_t AFRH;
+    volatile uint32_t BRR;
+    uint32_t reserved;
+    volatile uint32_t SECCFGR;
+} GPIO_Struct;
+
+// Register Pointers for Structs
+#define GPIOA_PTR       ((GPIO_Struct *) 0x42020000)
+#define GPIOB_PTR       ((GPIO_Struct *) 0x42020400)
+#define GPIOC_PTR       ((GPIO_Struct *) 0x42020800)
+#define ADC1            ((ADCType *) 0x42028000)
+#define ADC_COMMON      ((ADCCommon *) 0x42028300)
+
 
 // TIM15 Structure
 typedef struct {
@@ -219,6 +292,10 @@ typedef struct {
  volatile uint32_t g_keypad_tick_counter = 0;
  KeypadState g_keypad_state = KEYPAD_STATE_IDLE;
 
+ volatile uint16_t adc_raw_values[3] = {0, 0, 0};
+ volatile uint8_t adc_seq_index = 0;
+ volatile uint32_t adc_tick_counter = 0;
+
  // --- PI 1: Keypad Mapping ---
  // Defines the character for each [row][col] intersection
  // Rows: PF3, PF5, PF13, PF14
@@ -295,6 +372,59 @@ typedef struct {
  //=============================================================================
  // 3. PI 1&2: IMPLEMENTATION - Initialization Functions
  //=============================================================================
+
+ /**
+  * @brief Initializes ADC1 for 3-channel sequence (PA1, PB1, PC2).
+  * Enables interrupts to update adc_raw_values in background.
+  */
+ void init_ADC(void)
+ {
+     // 1. Setup GPIOs for Analog Mode
+     RCC_AHB2ENR |= (1 << 0) | (1 << 1) | (1 << 2); // Enable GPIO A, B, C
+     GPIOA_PTR->MODER |= (3 << 2);       // PA1 Analog
+     GPIOB_PTR->MODER |= (3 << 2);       // PB1 Analog
+     GPIOC_PTR->MODER |= (3 << 4);       // PC2 Analog
+
+     // 2. Enable ADC Clock
+     RCC_AHB2ENR |= (1 << 13);
+
+     // 3. Power up ADC (Deep Power Down exit)
+     ADC1->CR &= ~(1 << 29); // DEEPPWD = 0
+     ADC1->CR |= (1 << 28);  // ADVREGEN = 1
+
+     // 4. Clock Configuration
+     RCC_CCIPR1 |= (3 << 28); // ADCSEL
+     ADC_COMMON->CCR |= (3 << 16); // CKMODE
+
+     // 5. Sampling Time Configuration
+     ADC1->SMPR1 |= (7 << 18); // Ch 6 (PA1)
+     ADC1->SMPR1 |= (7 << 9);  // Ch 3 (PC2)
+     ADC1->SMPR2 |= (7 << 18); // Ch 16 (PB1)
+
+     // 6. Sequence Configuration (SQR1)
+     ADC1->SQR1 &= ~(0xF);
+     ADC1->SQR1 |= 2; // Length = 3 conversions (L=2 means 3)
+
+     ADC1->SQR1 &= ~(0x1FFFF << 6);
+     ADC1->SQR1 |= (6 << 6);   // SQ1 = 6 (PA1)
+     ADC1->SQR1 |= (16 << 12); // SQ2 = 16 (PB1)
+     ADC1->SQR1 |= (3 << 18);  // SQ3 = 3 (PC2)
+
+     // 7. Calibration
+     ADC1->CR |= (1 << 31); // ADCAL
+     while ((ADC1->CR & (1 << 31)) != 0);
+
+     // 8. Enable ADC
+     ADC1->CR |= (1 << 0); // ADEN
+     while ((ADC1->ISR & (1 << 0)) == 0); // Wait for ADRDY
+
+     // 9. Start & Interrupts
+     ADC1->IER |= (1 << 2);              // Enable EOC (End of Conversion) interrupt
+     NVIC_ISER1 |= (1 << 5);             // Enable ADC IRQ in NVIC (IRQ 18?)
+
+     ADC1->CR |= (1 << 2);               // ADSTART - Start first conversion sequence
+ }
+
 
  /**
   * @brief PI 1: Initializes TIM6 to generate an overflow event every 1ms.
@@ -510,11 +640,19 @@ void init_vibration_sensor(void) {
  }
 
  // MOCK (PI 3): read the value from the accelerometer via ADC
+ // Updated to use the ADC Globals (Reading logic commented out for now)
  void read_accelerometer_adc(void) {
-     // Will be implemented in PI 3 - ADC functionality
-     g_raw_accel_data.x = 10;
-     g_raw_accel_data.y = -5;
-     g_raw_accel_data.z = 15;
+     // 1. Read values from ISR-updated array
+     // float accelx = (float)adc_raw_values[0] / 409.6 - 5.0;
+     // float accely = (float)adc_raw_values[1] / 409.6 - 5.0;
+     // float accelz = (float)adc_raw_values[2] / 220.0 - 5.55;
+     ADC1->CR |= (1 << 2); // ADSTART
+
+
+     // 2. Update the logic struct (using mock logic for now to keep code compiling)
+     g_raw_accel_data.x = adc_raw_values[0];
+     g_raw_accel_data.y = adc_raw_values[1];
+     g_raw_accel_data.z = adc_raw_values[2];
  }
 
  // PI 2: Control buzzer PWM output
@@ -760,18 +898,22 @@ void init_vibration_sensor(void) {
              break;
 
          case ALARM_STATE_MONITORING:
-             read_accelerometer_adc(); // PI 3
-             add_acceleration_to_window(g_raw_accel_data); // PI 3
-             g_acceleration_pattern_value = compute_acceleration_pattern(); // PI 3
+             //read_accelerometer_adc(); // PI 3
+             //add_acceleration_to_window(g_raw_accel_data); // PI 3
+        	 if (adc_tick_counter >= 1000) {
+        		 adc_tick_counter = 0;
+        		 ADC1->CR |= (1 << 2);
+				 g_acceleration_pattern_value = compute_acceleration_pattern(); // PI 3
 
-             if (g_acceleration_pattern_value >= ACCELERATION_PATTERN_THRESHOLD) {
-                 set_buzzer_state(true); // PI 2
-                 // From project.pdf: Buzzer stays ON until correct password is entered
-             } else if (!g_buzzer_active) {
-                 // Only return to idle if buzzer is not active
-                 g_current_alarm_state = ALARM_STATE_IDLE;
-                 update_system_leds(g_is_alarm_enabled); // Restore normal LED state
-             }
+				 if (g_acceleration_pattern_value >= 1.0 + ACCELERATION_PATTERN_THRESHOLD) {
+					 //set_buzzer_state(true); // PI 2
+					 // From project.pdf: Buzzer stays ON until correct password is entered
+				 } else if (!g_buzzer_active) {
+					 // Only return to idle if buzzer is not active
+					 //g_current_alarm_state = ALARM_STATE_IDLE;
+					 //update_system_leds(g_is_alarm_enabled); // Restore normal LED state
+				 }
+        	 }
              break;
      }
  }
@@ -780,7 +922,30 @@ void init_vibration_sensor(void) {
 	 if (TIM6_SR & (1 << 0)) {
 	         TIM6_SR &= ~(1 << 0); // Clear Flag
 	         g_keypad_tick_counter++;
+	         adc_tick_counter++;
 	 }
+ }
+
+
+ // ADC1_2: Accelerometer Reading
+ // This ISR runs automatically when ADC conversion is done
+ void ADC1_2_IRQHandler(void)
+ {
+     // Check for End of Conversion (EOC)
+     if ((ADC1->ISR & (1 << 2)) != 0)
+     {
+         // Store the result
+         adc_raw_values[adc_seq_index] = ADC1->DR;
+         adc_seq_index++;
+
+         // If we have read all 3 channels in the sequence
+         if (adc_seq_index >= 3)
+         {
+             adc_seq_index = 0;
+             // Restart the sequence for continuous updating
+             //ADC1->CR |= (1 << 2); // ADSTART
+         }
+     }
  }
 
 //=============================================================================
@@ -875,6 +1040,7 @@ void TIM15_IRQHandler(void) {
      init_accelerometer();    // PI 3: Mock
      init_vibration_sensor(); // PI 2: Complete
      init_buzzer();           // PI 2: Complete
+     init_ADC();
      init_bluetooth_module(); // PI 3: Mock
 
      // --- PI 1: Set Initial State ---
