@@ -112,6 +112,7 @@
  #define TIM6_SR         *((volatile uint32_t *) 0x40001010) // Status Register (Offset 0x10)
  #define TIM6_PSC        *((volatile uint32_t *) 0x40001028) // Prescaler (Offset 0x28)
  #define TIM6_ARR        *((volatile uint32_t *) 0x4000102C) // Auto-Reload Register (Offset 0x2C)
+#define TIM6_DIER		 *((volatile uint32_t *) 0x4000100C)
 
  // --- PI 2: TIM15 (IC/OC Timer) Registers ---
 // Base: 0x4001 4000
@@ -188,7 +189,8 @@ typedef struct {
 #define NVIC_ISER0      *((volatile uint32_t *) 0xE000E100) // Interrupt Set Enable Register 0
 #define ISER2           *((volatile uint32_t *) 0xE000E108) // Interrupt Set Enable Register 2
 #define TIM15_IRQn      5   // TIM15 interrupt number (bit 5 in ISER2)
-
+#define TIM6_IRQn		17
+#define NVIC_ISER1      *((volatile uint32_t *) 0xE000E104)
 
  //=============================================================================
  // 2. Global Variables
@@ -200,6 +202,12 @@ typedef struct {
      ALARM_STATE_MONITORING  // Vibration detected, now checking for acceleration
  } AlarmState;
 
+ typedef enum {
+     KEYPAD_STATE_IDLE,       // Waiting for an initial trigger (vibration)
+     KEYPAD_STATE_FIRST_CHECK,  // Vibration detected, now checking for acceleration
+	 KEYPAD_STATE_SECOND_CHECK,
+ } KeypadState;
+
  // A structure to hold the raw 3-axis data from the accelerometer
  typedef struct {
      int x;
@@ -207,6 +215,9 @@ typedef struct {
      int z;
  } AccelerometerData;
 
+ char g_last_read_key = '\0';
+ uint32_t g_keypad_tick_counter = 0;
+ KeypadState g_keypad_state = KEYPAD_STATE_IDLE;
 
  // --- PI 1: Keypad Mapping ---
  // Defines the character for each [row][col] intersection
@@ -295,6 +306,8 @@ typedef struct {
      RCC_APB1ENR1 |= RCC_APB1ENR1_TIM6EN; // Enable TIM6 clock
      TIM6_PSC = 39;            // Set Prescaler to 39 (divides clock by 40)
      TIM6_ARR = 99;            // Set Auto-Reload to 99 (counts 100 ticks)
+     TIM6_DIER |= (1 << 0);
+     NVIC_ISER1 |= (1 << (TIM6_IRQn));
      TIM6_CR1 &= ~(1 << 1);    // Enable Update Event (UDIS=0)
      TIM6_CR1 |= (1 << 0);     // Enable Counter (CEN=1)
  }
@@ -645,6 +658,16 @@ void init_vibration_sensor(void) {
    * This is the core logic for PI 1, matching the project flowchart.
    */
   void process_keypad_input_with_password(void) {
+	 switch (g_keypad_state) {
+	 case KEYPAD_STATE_IDLE:
+		 1 + 2;
+		 break;
+	 case KEYPAD_STATE_FIRST_CHECK:
+		 break;
+	 case KEYPAD_STATE_SECOND_CHECK:
+		 break;
+
+	 }
      char key = read_keypad_input(); // Poll the hardware
 
      if (key == '\0') {
@@ -732,6 +755,13 @@ void init_vibration_sensor(void) {
              }
              break;
      }
+ }
+
+ void TIM6_IRQHandler(void) {
+	 if (TIM6_SR & (1 << 0)) {
+	         TIM6_SR &= ~(1 << 0); // Clear Flag
+	         g_keypad_tick_counter++;
+	 }
  }
 
 //=============================================================================
