@@ -205,7 +205,7 @@ typedef struct {
  typedef enum {
      KEYPAD_STATE_IDLE,       // Waiting for an initial trigger (vibration)
      KEYPAD_STATE_FIRST_CHECK,  // Vibration detected, now checking for acceleration
-	 KEYPAD_STATE_SECOND_CHECK,
+	 KEYPAD_STATE_WAIT_RELEASE,
  } KeypadState;
 
  // A structure to hold the raw 3-axis data from the accelerometer
@@ -216,7 +216,7 @@ typedef struct {
  } AccelerometerData;
 
  char g_last_read_key = '\0';
- uint32_t g_keypad_tick_counter = 0;
+ volatile uint32_t g_keypad_tick_counter = 0;
  KeypadState g_keypad_state = KEYPAD_STATE_IDLE;
 
  // --- PI 1: Keypad Mapping ---
@@ -614,11 +614,6 @@ void init_vibration_sensor(void) {
      GPIOA_ODR &= ~(1 << 4); // PA4 (Blue) LOW -> ON
  }
 
- /**
-  * @brief PI 1: Scans the 4x3 keypad and returns the pressed key.
-  * Implements a standard matrix scanning algorithm.
-  * @return Pressed key character ('1', '#', etc.) or '\0' if no key is pressed.
-  */
  char read_keypad_input(void) {
      const uint16_t ALL_COLS = g_col_pins[0] | g_col_pins[1] | g_col_pins[2];
 
@@ -634,16 +629,8 @@ void init_vibration_sensor(void) {
          for (int r = 0; r < 4; r++) { // Iterate through all rows
              // 4. Check if a key is pressed (row pin is pulled LOW)
              if (!(idr_val & g_row_pins[r])) {
-                 // 5. Wait for debouncing
-                 delay_ms(50);
-
-                 // 6. Confirm the key is still pressed
-                 if (!(GPIOF_IDR & g_row_pins[r])) {
-                     // 7. Wait for the key to be released (blocking)
-                     while (!(GPIOF_IDR & g_row_pins[r]));
                      GPIOF_ODR |= ALL_COLS; // Reset columns
                      return g_keymap[r][c]; // Return the pressed key
-                 }
              }
          }
      }
@@ -658,56 +645,102 @@ void init_vibration_sensor(void) {
    * This is the core logic for PI 1, matching the project flowchart.
    */
   void process_keypad_input_with_password(void) {
+	 char key;
 	 switch (g_keypad_state) {
 	 case KEYPAD_STATE_IDLE:
-		 1 + 2;
-		 break;
-	 case KEYPAD_STATE_FIRST_CHECK:
-		 break;
-	 case KEYPAD_STATE_SECOND_CHECK:
-		 break;
+			 // 1. Instant scan (no delay inside)
+			 key = read_keypad_input();
+
+			 if (key == '\0') {
+				 return; // Nothing pressed, exit function immediately
+			 }
+			 else {
+				 // Key detected!
+				 g_last_read_key = key;
+				 g_keypad_tick_counter = 0; // Reset timer
+				 g_keypad_state = KEYPAD_STATE_FIRST_CHECK;
+
+				 // DEBUG: Turn on Blue LED to prove we found a key
+				 GPIOA_ODR &= ~(1 << 4);
+			 }
+			 break;
+
+		 case KEYPAD_STATE_FIRST_CHECK:
+			 // This code runs every loop now until counter >= 50
+
+			 // Check if 50ms (debouncing time) has passed
+			 // NOTE: 1000ms is 1 second, that is too long for a button press!
+			 // Use 50ms for debouncing.
+			 if(g_keypad_tick_counter >= 50) {
+
+				 // Double check the key
+				 key = read_keypad_input();
+
+				 if (key == g_last_read_key) {
+					  // Confirmed! It wasn't noise.
+					  // Handle the password logic here...
+					  // handle_password(key);
+
+					  // Move to wait release so we don't spam input
+					  g_keypad_state = KEYPAD_STATE_WAIT_RELEASE;
+				 } else {
+					  // It was noise, go back to IDLE
+					  g_keypad_state = KEYPAD_STATE_IDLE;
+					  // Turn off Blue LED
+					  GPIOA_ODR |= (1 << 4);
+				 }
+			 }
+			 break;
+
+		 case KEYPAD_STATE_WAIT_RELEASE: // Actually "WAIT_RELEASE"
+			 key = read_keypad_input();
+			 if (key == '\0') {
+				 // User let go of button
+				 g_keypad_state = KEYPAD_STATE_IDLE;
+				 // Turn off Blue LED
+				 GPIOA_ODR |= (1 << 4);
+
+
+				 if (g_last_read_key == '#') {
+					 // ENTER ('#') was pressed, check the password
+					 if (strcmp(g_keypad_buffer, CORRECT_PASSWORD) == 0) {
+						 // --- PASSWORD CORRECT ---
+						 g_vibration_timestamp_index = 0;
+						 g_vibration_timestamp_count = 0;
+						 // Clear the entire vibration timestamp circular buffer
+						 for (int i = 0; i < VIBRATION_INTERVAL_BUFFER_SIZE; i++) {
+							 g_vibration_timestamps[i] = 0;
+						 }
+						 // Toggle the system state (ON <-> OFF)
+						 g_is_alarm_enabled = !g_is_alarm_enabled;
+						 g_current_alarm_state = ALARM_STATE_IDLE;
+						 set_buzzer_state(false);
+						 // Update the LEDs to reflect the new state
+						 update_system_leds(g_is_alarm_enabled);
+					 }
+
+					 // Clear the buffer regardless of password correctness
+					 g_keypad_buffer_index = 0;
+					 g_keypad_buffer[0] = '\0';
+
+				 } else if (g_last_read_key == '*') {
+					 // CLEAR ('*') was pressed
+					 g_keypad_buffer_index = 0;
+					 g_keypad_buffer[0] = '\0';
+
+				 } else if (g_last_read_key >= '0' && g_last_read_key <= '9') {
+					 // A digit was pressed, add it to the buffer
+					 if (g_keypad_buffer_index < (PASSWORD_BUFFER_SIZE - 1)) {
+						 g_keypad_buffer[g_keypad_buffer_index++] = g_last_read_key;
+						 g_keypad_buffer[g_keypad_buffer_index] = '\0'; // Null-terminate the string
+					 }
+				 }
+			 }
+			 break;
 
 	 }
-     char key = read_keypad_input(); // Poll the hardware
 
-     if (key == '\0') {
-         return; // No key pressed
-     }
 
-     if (key == '#') {
-         // ENTER ('#') was pressed, check the password
-         if (strcmp(g_keypad_buffer, CORRECT_PASSWORD) == 0) {
-             // --- PASSWORD CORRECT ---
-             g_vibration_timestamp_index = 0;
-             g_vibration_timestamp_count = 0;
-             // Clear the entire vibration timestamp circular buffer
-             for (int i = 0; i < VIBRATION_INTERVAL_BUFFER_SIZE; i++) {
-                 g_vibration_timestamps[i] = 0;
-             }
-             // Toggle the system state (ON <-> OFF)
-             g_is_alarm_enabled = !g_is_alarm_enabled;
-             g_current_alarm_state = ALARM_STATE_IDLE;
-             set_buzzer_state(false);
-             // Update the LEDs to reflect the new state
-             update_system_leds(g_is_alarm_enabled);
-         }
-
-         // Clear the buffer regardless of password correctness
-         g_keypad_buffer_index = 0;
-         g_keypad_buffer[0] = '\0';
-
-     } else if (key == '*') {
-         // CLEAR ('*') was pressed
-         g_keypad_buffer_index = 0;
-         g_keypad_buffer[0] = '\0';
-
-     } else if (key >= '0' && key <= '9') {
-         // A digit was pressed, add it to the buffer
-         if (g_keypad_buffer_index < (PASSWORD_BUFFER_SIZE - 1)) {
-             g_keypad_buffer[g_keypad_buffer_index++] = key;
-             g_keypad_buffer[g_keypad_buffer_index] = '\0'; // Null-terminate the string
-         }
-     }
  }
  /**
   * @brief PI 1: Blocks execution for a specific duration using TIM6.
