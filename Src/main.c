@@ -742,20 +742,6 @@ void init_vibration_sensor(void) {
 
 
  }
- /**
-  * @brief PI 1: Blocks execution for a specific duration using TIM6.
-  * @param ms Number of milliseconds to delay.
-  */
- void delay_ms(volatile uint32_t ms) {
-     // This function polls the TIM6 Update Interrupt Flag (UIF)
-     for (uint32_t i = 0; i < ms; i++) {
-         // Wait until the UIF bit (Bit 0) in the Status Register (SR) is set
-         while ( (TIM6_SR & (1 << 0)) == 0 );
-         // Clear the flag by writing 0 to it
-         TIM6_SR &= ~(1 << 0);
-     }
- }
-
 
  // PI 2 & 3: Manages the alarm logic (PI 2: vibration complete, PI 3: acceleration mock)
  void update_alarm_logic(void) {
@@ -897,7 +883,7 @@ void TIM15_IRQHandler(void) {
 
      // Main system loop (Bare-metal superloop)
      while (1) {
-
+    	 __asm volatile ("wfi");
          // PI 1: Poll keypad and process password logic
          process_keypad_input_with_password();
 
