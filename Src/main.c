@@ -293,6 +293,7 @@ typedef struct {
  KeypadState g_keypad_state = KEYPAD_STATE_IDLE;
 
  volatile uint16_t adc_raw_values[3] = {0, 0, 0};
+ volatile float acceleration_values[3] = {0.0, 0.0, 0.0};
  volatile uint8_t adc_seq_index = 0;
  volatile uint32_t adc_tick_counter = 0;
 
@@ -942,6 +943,9 @@ void init_vibration_sensor(void) {
          if (adc_seq_index >= 3)
          {
              adc_seq_index = 0;
+             acceleration_values[0] = (float)adc_raw_values[0] / 409.6 - 5.0;
+             acceleration_values[1] = (float)adc_raw_values[1] / 409.6 - 5.0;
+             acceleration_values[2] = (float)adc_raw_values[2] / 220.0 - 5.55;
              // Restart the sequence for continuous updating
              //ADC1->CR |= (1 << 2); // ADSTART
          }
