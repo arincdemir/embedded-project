@@ -414,17 +414,14 @@ typedef struct {
  bool high = false;
 
  // --- Bluetooth / Command Globals ---
- #define UART_RX_BUFFER_SIZE 64
- volatile char g_uart_rx_buffer[UART_RX_BUFFER_SIZE];
- volatile uint8_t g_uart_rx_head = 0;
- volatile uint8_t g_uart_rx_tail = 0;
+  // Changed to small linear buffer as requested
+  #define UART_BUFFER_SIZE 15
+  volatile char g_uart_buffer[UART_BUFFER_SIZE];
+  volatile uint8_t g_uart_index = 0;
+  volatile bool g_command_ready = false; // Flag to tell Main Loop "We have a command"
 
- // Current Password (Modifiable) - Default is "1234"
- char g_current_password[PASSWORD_BUFFER_SIZE] = INITIAL_CORRECT_PASSWORD;
-
- // Helper for the parser to accumulate a command string
- char g_cmd_build_buffer[32];
- uint8_t g_cmd_build_index = 0;
+  // Current Password (Modifiable) - Default is "1234"
+  char g_current_password[PASSWORD_BUFFER_SIZE] = INITIAL_CORRECT_PASSWORD;
 
  //=============================================================================
  // 3. PI 1&2: IMPLEMENTATION - Initialization Functions
@@ -762,66 +759,49 @@ void init_vibration_sensor(void) {
      }
  }
 
- //=============================================================================
- // PI 3: Bluetooth Command Processor (The Logic Parser)
- //=============================================================================
+//=============================================================================
+// PI 3: Bluetooth Command Processor (The Logic Parser)
+//=============================================================================
+  void check_bluetooth_commands(void) {
 
- void check_bluetooth_commands(void) {
-     // Process all characters currently in the buffer
-     // We loop until the Tail catches up to the Head
-     while (g_uart_rx_tail != g_uart_rx_head) {
+      // Only run if the ISR told us a full command is ready
+      if (g_command_ready) {
 
-         // 1. Read the next character from the Ring Buffer
-         char c = g_uart_rx_buffer[g_uart_rx_tail];
+          // --- COMMAND: RESET ALARM (R) ---
+          // Note: Buffer is now just "R" (the '.' was handled in ISR)
+          if (g_uart_buffer[0] == 'R') {
+              // Disarm system
+              g_is_alarm_enabled = false;
+              g_current_alarm_state = ALARM_STATE_IDLE;
+              set_buzzer_state(false);
 
-         // 2. Advance the Tail (wrapping around 64)
-         g_uart_rx_tail = (g_uart_rx_tail + 1) % UART_RX_BUFFER_SIZE;
+              // Update LEDs to "OFF" state (Red ON, Green OFF)
+              update_system_leds(false);
 
-         // 3. Check for End of Command Marker ('.')
-         if (c == '.') {
-             // Terminate the string so we can read it
-             g_cmd_build_buffer[g_cmd_build_index] = '\0';
+              // Clear vibration history
+              g_vibration_timestamp_count = 0;
+              g_vibration_timestamp_index = 0;
+          }
 
-             // --- COMMAND: RESET ALARM (R.) ---
-             if (g_cmd_build_buffer[0] == 'R') {
-                 // Disarm system
-                 g_is_alarm_enabled = false;
-                 g_current_alarm_state = ALARM_STATE_IDLE;
-                 set_buzzer_state(false);
+          // --- COMMAND: CHANGE PASSWORD (Pxxxx) ---
+          else if (g_uart_buffer[0] == 'P') {
+              // The password starts at index 1 (after 'P')
+              int i = 0;
+              // Safety check: ensure we don't overflow the password buffer
+              // g_uart_buffer is already null terminated by the ISR
+              while (g_uart_buffer[i+1] != '\0' && i < PASSWORD_BUFFER_SIZE - 1) {
+                  g_current_password[i] = g_uart_buffer[i+1];
+                  i++;
+              }
+              g_current_password[i] = '\0'; // Null terminate the new password
+          }
 
-                 // Update LEDs to "OFF" state (Red ON, Green OFF)
-                 update_system_leds(false);
-
-                 // Clear vibration history so it doesn't trigger immediately again
-                 g_vibration_timestamp_count = 0;
-                 g_vibration_timestamp_index = 0;
-             }
-
-             // --- COMMAND: CHANGE PASSWORD (Pxxxx.) ---
-             else if (g_cmd_build_buffer[0] == 'P') {
-                 // The password starts at index 1 (after 'P')
-                 // We copy it into the global system password variable
-                 int i = 0;
-                 // Safety check: ensure we don't overflow the password buffer
-                 while (g_cmd_build_buffer[i+1] != '\0' && i < PASSWORD_BUFFER_SIZE - 1) {
-                     g_current_password[i] = g_cmd_build_buffer[i+1];
-                     i++;
-                 }
-                 g_current_password[i] = '\0'; // Null terminate the new password
-             }
-
-             // 4. Reset the builder index for the next command
-             g_cmd_build_index = 0;
-         }
-         else {
-             // It's not a '.', so it's part of the data. Add to builder.
-             // Safety: Don't overflow the build buffer (32 chars)
-             if (g_cmd_build_index < 31) {
-                 g_cmd_build_buffer[g_cmd_build_index++] = c;
-             }
-         }
-     }
- }
+          // --- RESET BUFFER LOGIC ---
+          // Clear index and flag so ISR can start receiving the next command
+          g_uart_index = 0;
+          g_command_ready = false;
+      }
+  }
 
  // MOCK (PI 3): Adds new raw acceleration data to the sliding window
  void add_acceleration_to_window(AccelerometerData accel_data) {
@@ -1185,15 +1165,23 @@ void USART3_IRQHandler(void) {
         // Read data (this clears the flag)
         char data = (char)USART3->RDR;
 
-        // Store in the Ring Buffer at the Head
-        g_uart_rx_buffer[g_uart_rx_head] = data;
+        // Only process if the Main Loop has finished the previous command
+        if (!g_command_ready) {
 
-        // Move Head forward, wrapping around if we hit the end
-        uint8_t next_head = (g_uart_rx_head + 1) % UART_RX_BUFFER_SIZE;
-
-        // (Optional) Overflow check: Don't overwrite Tail if buffer is full
-        if (next_head != g_uart_rx_tail) {
-            g_uart_rx_head = next_head;
+            // Check for End of Command Marker ('.')
+            if (data == '.') {
+                g_uart_buffer[g_uart_index] = '\0'; // Null terminate string
+                g_command_ready = true;             // Tell main loop to wake up
+            }
+            // Otherwise, keep filling the buffer
+            else {
+                if (g_uart_index < (UART_BUFFER_SIZE - 1)) {
+                    g_uart_buffer[g_uart_index++] = data;
+                }
+                // If buffer overflows, we just ignore extra chars until '.' comes
+                // or you could reset index here to be safe:
+                // else { g_uart_index = 0; }
+            }
         }
     }
 }
