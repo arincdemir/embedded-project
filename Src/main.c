@@ -1,3 +1,23 @@
+
+
+
+
+
+
+
+
+
+// DO NOT REMOVE CHECKADRESSES WITHOUT CHECKING ALL RELEVANT ADDRESSES AT "#CHECKADRESS" POINTS
+
+
+
+
+
+
+
+
+
+
 /*
  * CmpE443 - PI 1: GPIO and Timer Implementation
  * ------------------------------------------------
@@ -46,8 +66,8 @@
  // The duration in seconds that acceleration must be continuously detected before the alarm is triggered
  #define ACCELERATION_TIME_THRESHOLD_S 3
 
- // The correct password for disarming the alarm via Keypad
- #define CORRECT_PASSWORD "1234"
+ // The initial correct password for disarming the alarm via Keypad
+ #define INITIAL_CORRECT_PASSWORD "1234"
 
  // Buffer size for storing the password input from the keypad
  #define PASSWORD_BUFFER_SIZE 10
@@ -258,6 +278,29 @@ typedef struct {
 
 #define TIM16           ((TIM16_General_Purpose_Type *) 0x40014400)
 
+// --- USART Register Structure ---   #CHECKADRESS
+typedef struct {
+    volatile uint32_t CR1;   // 0x00
+    volatile uint32_t CR2;   // 0x04
+    volatile uint32_t CR3;   // 0x08
+    volatile uint32_t BRR;   // 0x0C
+    volatile uint32_t GTPR;  // 0x10
+    volatile uint32_t RTOR;  // 0x14
+    volatile uint32_t RQR;   // 0x18
+    volatile uint32_t ISR;   // 0x1C
+    volatile uint32_t ICR;   // 0x20
+    volatile uint32_t RDR;   // 0x24
+    volatile uint32_t TDR;   // 0x28
+    volatile uint32_t PRESC; // 0x2C
+} USARTType;
+
+// --- USART3 Base Address (APB1) ---
+#define USART3 ((USARTType *) 0x40004800)
+
+// --- RCC Enable Bit for USART3 ---
+#define RCC_APB1ENR1_USART3EN (1 << 18) // Bit 18
+#define USART3_IRQn 63                  // Interrupt Number
+
 // --- NVIC (Nested Vectored Interrupt Controller) Registers ---
 #define NVIC_ISER0      *((volatile uint32_t *) 0xE000E100) // Interrupt Set Enable Register 0
 #define ISER2           *((volatile uint32_t *) 0xE000E108) // Interrupt Set Enable Register 2
@@ -365,6 +408,16 @@ typedef struct {
 
  // Flag to track if buzzer is currently high pitch or low pitch
  bool high = false;
+
+ // --- Bluetooth / Command Globals ---
+  // Changed to small linear buffer as requested
+  #define UART_BUFFER_SIZE 15
+  volatile char g_uart_buffer[UART_BUFFER_SIZE];
+  volatile uint8_t g_uart_index = 0;
+  volatile bool g_command_ready = false; // Flag to tell Main Loop "We have a command"
+
+  // Current Password (Modifiable) - Default is "1234"
+  char g_current_password[PASSWORD_BUFFER_SIZE] = INITIAL_CORRECT_PASSWORD;
 
  //=============================================================================
  // 3. PI 1&2: IMPLEMENTATION - Initialization Functions
@@ -623,8 +676,46 @@ void init_vibration_sensor(void) {
      init_buzzer_timer();  // Configure TIM16 for PWM
  }
 
+ /**
+  * @brief PI 3: Real Initialization for Bluetooth via USART3 (PB10/PB11)
+  * Baud Rate: 9600
+  * Interrupts: RXNE Enabled
+  */
+ void init_USART3_Bluetooth(void) {
+     // 1. Enable Clocks
+     RCC_AHB2ENR |= (1 << 1);               // Enable GPIOB Clock (Bit 1)
+     RCC_APB1ENR1 |= RCC_APB1ENR1_USART3EN; // Enable USART3 Clock
+
+     // 2. Configure PB10 (TX) and PB11 (RX)
+     // Clear Mode Bits for Pin 10 and 11
+     GPIOB_PTR->MODER &= ~((3 << (10*2)) | (3 << (11*2)));
+     // Set to Alternate Function Mode (10)
+     GPIOB_PTR->MODER |=  ((2 << (10*2)) | (2 << (11*2)));
+
+     // 3. Set Alternate Function to AF7 (USART3)
+     // PB10 is in AFRH (pins 8-15). PB10 is bits [11:8], PB11 is bits [15:12]
+     GPIOB_PTR->AFRH &= ~((0xF << 8) | (0xF << 12)); // Clear old settings
+     GPIOB_PTR->AFRH |=  ((0x7 << 8) | (0x7 << 12)); // Set AF7 (0111)
+
+     // 4. Set Baud Rate to 38400 (HC-05 Default)
+     // Formula: F_clk / Baud. Assuming F_clk is 4MHz based on your previous code.
+     // 4,000,000 / 38400 ~= 104.16. Round to 104 (0x68).
+     USART3->BRR = 104;
+
+     // 5. Enable RX Interrupt (RXNEIE)
+     USART3->CR1 |= (1 << 5);
+
+     // 6. Enable UART (TE=1, RE=1, UE=1)
+     USART3->CR1 |= (1 << 3) | (1 << 2) | (1 << 0);
+
+     // 7. Enable USART3 Interrupt in NVIC
+     // IRQ 63. 63 - 32 = 31. It is Bit 31 of ISER1.
+     NVIC_ISER1 |= (1 << 31);
+ }
+
  // MOCK (PI 3): Initializes the Bluetooth module
  void init_bluetooth_module(void) {
+	 init_USART3_Bluetooth();
  }
 
 
@@ -640,10 +731,49 @@ void init_vibration_sensor(void) {
      }
  }
 
- // MOCK (PI 3): check for incoming commands from Bluetooth
- void check_bluetooth_commands(void) {
-     // In a real implementation, this would parse serial data.
- }
+//=============================================================================
+// PI 3: Bluetooth Command Processor (The Logic Parser)
+//=============================================================================
+  void check_bluetooth_commands(void) {
+
+      // Only run if the ISR told us a full command is ready
+      if (g_command_ready) {
+
+          // --- COMMAND: RESET ALARM (R) ---
+          // Note: Buffer is now just "R" (the '.' was handled in ISR)
+          if (g_uart_buffer[0] == 'R') {
+              // Disarm system
+              g_is_alarm_enabled = false;
+              g_current_alarm_state = ALARM_STATE_IDLE;
+              set_buzzer_state(false);
+
+              // Update LEDs to "OFF" state (Red ON, Green OFF)
+              update_system_leds(false);
+
+              // Clear vibration history
+              g_vibration_timestamp_count = 0;
+              g_vibration_timestamp_index = 0;
+          }
+
+          // --- COMMAND: CHANGE PASSWORD (Pxxxx) ---
+          else if (g_uart_buffer[0] == 'P') {
+              // The password starts at index 1 (after 'P')
+              int i = 0;
+              // Safety check: ensure we don't overflow the password buffer
+              // g_uart_buffer is already null terminated by the ISR
+              while (g_uart_buffer[i+1] != '\0' && i < PASSWORD_BUFFER_SIZE - 1) {
+                  g_current_password[i] = g_uart_buffer[i+1];
+                  i++;
+              }
+              g_current_password[i] = '\0'; // Null terminate the new password
+          }
+
+          // --- RESET BUFFER LOGIC ---
+          // Clear index and flag so ISR can start receiving the next command
+          g_uart_index = 0;
+          g_command_ready = false;
+      }
+  }
 
  // MOCK (PI 3): Adds new raw acceleration data to the sliding window
  void add_acceleration_to_window(AccelerometerData accel_data) {
@@ -833,7 +963,7 @@ void init_vibration_sensor(void) {
 
 				 if (g_last_read_key == '#') {
 					 // ENTER ('#') was pressed, check the password
-					 if (strcmp(g_keypad_buffer, CORRECT_PASSWORD) == 0) {
+					 if (strcmp(g_keypad_buffer, g_current_password) == 0) {
 						 // --- PASSWORD CORRECT ---
 						 g_vibration_timestamp_index = 0;
 						 g_vibration_timestamp_count = 0;
@@ -1024,6 +1154,35 @@ void TIM15_IRQHandler(void) {
     }
 }
 
+
+// PI 3: USART3 Interrupt Handler (Bluetooth Data)
+
+void USART3_IRQHandler(void) {
+    // Check if Read Data Register is Not Empty (RXNE)
+    if (USART3->ISR & (1 << 5)) {
+        // Read data (this clears the flag)
+        char data = (char)USART3->RDR;
+
+        // Only process if the Main Loop has finished the previous command
+        if (!g_command_ready) {
+
+            // Check for End of Command Marker ('.')
+            if (data == '.') {
+                g_uart_buffer[g_uart_index] = '\0'; // Null terminate string
+                g_command_ready = true;             // Tell main loop to wake up
+            }
+            // Otherwise, keep filling the buffer
+            else {
+                if (g_uart_index < (UART_BUFFER_SIZE - 1)) {
+                    g_uart_buffer[g_uart_index++] = data;
+                }
+                // If buffer overflows, we just ignore extra chars until '.' comes
+                // or you could reset index here to be safe:
+                // else { g_uart_index = 0; }
+            }
+        }
+    }
+}
 
  //=============================================================================
  // 7. Main Program Loop
