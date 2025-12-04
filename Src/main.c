@@ -777,12 +777,12 @@ void init_vibration_sensor(void) {
          // 2. Advance the Tail (wrapping around 64)
          g_uart_rx_tail = (g_uart_rx_tail + 1) % UART_RX_BUFFER_SIZE;
 
-         // 3. Check for End of Command Marker ('#')
-         if (c == '#') {
+         // 3. Check for End of Command Marker ('.')
+         if (c == '.') {
              // Terminate the string so we can read it
              g_cmd_build_buffer[g_cmd_build_index] = '\0';
 
-             // --- COMMAND: RESET ALARM (R#) ---
+             // --- COMMAND: RESET ALARM (R.) ---
              if (g_cmd_build_buffer[0] == 'R') {
                  // Disarm system
                  g_is_alarm_enabled = false;
@@ -797,7 +797,7 @@ void init_vibration_sensor(void) {
                  g_vibration_timestamp_index = 0;
              }
 
-             // --- COMMAND: CHANGE PASSWORD (Pxxxx#) ---
+             // --- COMMAND: CHANGE PASSWORD (Pxxxx.) ---
              else if (g_cmd_build_buffer[0] == 'P') {
                  // The password starts at index 1 (after 'P')
                  // We copy it into the global system password variable
@@ -814,7 +814,7 @@ void init_vibration_sensor(void) {
              g_cmd_build_index = 0;
          }
          else {
-             // It's not a '#', so it's part of the data. Add to builder.
+             // It's not a '.', so it's part of the data. Add to builder.
              // Safety: Don't overflow the build buffer (32 chars)
              if (g_cmd_build_index < 31) {
                  g_cmd_build_buffer[g_cmd_build_index++] = c;
