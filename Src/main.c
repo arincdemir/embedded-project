@@ -65,7 +65,7 @@
  #define ACCELERATION_WINDOW_SIZE 20
 
  // The threshold for the computed acceleration pattern value to trigger the alarm
- #define ACCELERATION_PATTERN_THRESHOLD 0.75f
+ #define ACCELERATION_PATTERN_THRESHOLD 0.015f
 
  // Interval in milliseconds between accelerometer readings in monitoring mode
  #define ACCELEROMETER_READ_INTERVAL_MS 200
@@ -292,8 +292,6 @@ typedef struct {
  volatile uint32_t g_keypad_tick_counter = 0;
  KeypadState g_keypad_state = KEYPAD_STATE_IDLE;
 
- volatile uint16_t adc_raw_values[3] = {0, 0, 0};
- volatile float acceleration_values[3] = {0.0, 0.0, 0.0};
  volatile uint8_t adc_seq_index = 0;
  volatile uint32_t adc_tick_counter = 0;
 
@@ -361,8 +359,6 @@ typedef struct {
  // Stores the latest reading from the acceleration sensor
  int g_acceleration_value = 0;
 
- // System tick counter for timing operations (incremented each main loop)
- uint32_t g_system_tick_ms = 0;
 
  // Flag to track if buzzer is currently active (alarm triggered)
  bool g_buzzer_active = false;
@@ -640,21 +636,6 @@ void init_vibration_sensor(void) {
  void init_bluetooth_module(void) {
  }
 
- // MOCK (PI 3): read the value from the accelerometer via ADC
- // Updated to use the ADC Globals (Reading logic commented out for now)
- void read_accelerometer_adc(void) {
-     // 1. Read values from ISR-updated array
-     // float accelx = (float)adc_raw_values[0] / 409.6 - 5.0;
-     // float accely = (float)adc_raw_values[1] / 409.6 - 5.0;
-     // float accelz = (float)adc_raw_values[2] / 220.0 - 5.55;
-     ADC1->CR |= (1 << 2); // ADSTART
-
-
-     // 2. Update the logic struct (using mock logic for now to keep code compiling)
-     g_raw_accel_data.x = adc_raw_values[0];
-     g_raw_accel_data.y = adc_raw_values[1];
-     g_raw_accel_data.z = adc_raw_values[2];
- }
 
  // PI 2: Control buzzer PWM output
  void set_buzzer_state(bool activate) {
@@ -680,7 +661,25 @@ void init_vibration_sensor(void) {
 
  // MOCK (PI 3): Computes a pattern value from the raw acceleration window data
  float compute_acceleration_pattern(void) {
-     return 1.0f; // Mock pattern value
+
+	 float accelx_g = 0;
+	 float accely_g = 0;
+	 float accelz_g = 0;
+	 float magnitude = 0;
+
+	 float sum_square_deviations = 0.0;
+	 for (int i = 0; i < ACCELERATION_WINDOW_SIZE - 1; i++) {
+		 accelx_g = (float)g_acceleration_window[i].x / 409.6 - 5.0;
+		 accely_g = (float)g_acceleration_window[i].y / 409.6 - 5.0;
+		 accelz_g = (float)g_acceleration_window[i].z / 220.0 - 5.55;
+
+		 magnitude = (accelx_g * accelx_g) + (accely_g * accely_g) + (accelz_g * accelz_g);
+
+		 float deviation = (magnitude - 1.0);
+		 sum_square_deviations += deviation * deviation;
+	 }
+	 float variance = sum_square_deviations / ACCELERATION_WINDOW_SIZE;
+     return variance; // Mock pattern value
  }
 
 
@@ -884,7 +883,6 @@ void init_vibration_sensor(void) {
 
  // PI 2 & 3: Manages the alarm logic (PI 2: vibration complete, PI 3: acceleration mock)
  void update_alarm_logic(void) {
-     g_system_tick_ms += 100;
 
      // No more artificial timer - timestamps handle the 5-second window automatically
 
@@ -894,6 +892,7 @@ void init_vibration_sensor(void) {
 
              if (g_vibration_irregularity >= VIBRATION_IRREGULARITY_THRESHOLD) {
                  g_current_alarm_state = ALARM_STATE_MONITORING;
+                 g_acceleration_window_index = 0;
                  set_monitoring_led_state(); // Turn on blue LED
              }
              break;
@@ -901,19 +900,22 @@ void init_vibration_sensor(void) {
          case ALARM_STATE_MONITORING:
              //read_accelerometer_adc(); // PI 3
              //add_acceleration_to_window(g_raw_accel_data); // PI 3
-        	 if (adc_tick_counter >= 1000) {
+        	 if (adc_tick_counter >= ACCELEROMETER_READ_INTERVAL_MS) {
         		 adc_tick_counter = 0;
-        		 ADC1->CR |= (1 << 2);
-				 g_acceleration_pattern_value = compute_acceleration_pattern(); // PI 3
-
-				 if (g_acceleration_pattern_value >= 1.0 + ACCELERATION_PATTERN_THRESHOLD) {
-					 //set_buzzer_state(true); // PI 2
-					 // From project.pdf: Buzzer stays ON until correct password is entered
-				 } else if (!g_buzzer_active) {
-					 // Only return to idle if buzzer is not active
-					 //g_current_alarm_state = ALARM_STATE_IDLE;
-					 //update_system_leds(g_is_alarm_enabled); // Restore normal LED state
-				 }
+        		 if (g_acceleration_window_index >= ACCELERATION_WINDOW_SIZE) {
+					 g_acceleration_pattern_value = compute_acceleration_pattern(); // PI 3
+					 if (g_acceleration_pattern_value >= ACCELERATION_PATTERN_THRESHOLD) {
+						 set_buzzer_state(true); // PI 2
+						 // From project.pdf: Buzzer stays ON until correct password is entered
+					 } else if (!g_buzzer_active) {
+						 // Only return to idle if buzzer is not active
+						 g_current_alarm_state = ALARM_STATE_IDLE;
+						 update_system_leds(g_is_alarm_enabled); // Restore normal LED state
+					 }
+        		 }
+        		 else {
+            		 ADC1->CR |= (1 << 2);
+        		 }
         	 }
              break;
      }
@@ -936,18 +938,23 @@ void init_vibration_sensor(void) {
      if ((ADC1->ISR & (1 << 2)) != 0)
      {
          // Store the result
-         adc_raw_values[adc_seq_index] = ADC1->DR;
+    	 if (adc_seq_index == 0)  {
+    		 g_raw_accel_data.x = ADC1->DR;
+    	 }
+    	 else if (adc_seq_index == 1) {
+    		 g_raw_accel_data.y = ADC1->DR;
+    	 }
+    	 else if (adc_seq_index == 2) {
+			 g_raw_accel_data.z = ADC1->DR;
+    	 }
          adc_seq_index++;
 
          // If we have read all 3 channels in the sequence
          if (adc_seq_index >= 3)
          {
+        	 g_acceleration_window[g_acceleration_window_index] = g_raw_accel_data;
+        	 g_acceleration_window_index++;
              adc_seq_index = 0;
-             acceleration_values[0] = (float)adc_raw_values[0] / 409.6 - 5.0;
-             acceleration_values[1] = (float)adc_raw_values[1] / 409.6 - 5.0;
-             acceleration_values[2] = (float)adc_raw_values[2] / 220.0 - 5.55;
-             // Restart the sequence for continuous updating
-             //ADC1->CR |= (1 << 2); // ADSTART
          }
      }
  }
