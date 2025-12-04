@@ -65,7 +65,7 @@
  #define ACCELERATION_WINDOW_SIZE 20
 
  // The threshold for the computed acceleration pattern value to trigger the alarm
- #define ACCELERATION_PATTERN_THRESHOLD 0.015f
+ #define ACCELERATION_PATTERN_THRESHOLD 0.05f
 
  // Interval in milliseconds between accelerometer readings in monitoring mode
  #define ACCELEROMETER_READ_INTERVAL_MS 200
@@ -370,58 +370,6 @@ typedef struct {
  // 3. PI 1&2: IMPLEMENTATION - Initialization Functions
  //=============================================================================
 
- /**
-  * @brief Initializes ADC1 for 3-channel sequence (PA1, PB1, PC2).
-  * Enables interrupts to update adc_raw_values in background.
-  */
- void init_ADC(void)
- {
-     // 1. Setup GPIOs for Analog Mode
-     RCC_AHB2ENR |= (1 << 0) | (1 << 1) | (1 << 2); // Enable GPIO A, B, C
-     GPIOA_PTR->MODER |= (3 << 2);       // PA1 Analog
-     GPIOB_PTR->MODER |= (3 << 2);       // PB1 Analog
-     GPIOC_PTR->MODER |= (3 << 4);       // PC2 Analog
-
-     // 2. Enable ADC Clock
-     RCC_AHB2ENR |= (1 << 13);
-
-     // 3. Power up ADC (Deep Power Down exit)
-     ADC1->CR &= ~(1 << 29); // DEEPPWD = 0
-     ADC1->CR |= (1 << 28);  // ADVREGEN = 1
-
-     // 4. Clock Configuration
-     RCC_CCIPR1 |= (3 << 28); // ADCSEL
-     ADC_COMMON->CCR |= (3 << 16); // CKMODE
-
-     // 5. Sampling Time Configuration
-     ADC1->SMPR1 |= (7 << 18); // Ch 6 (PA1)
-     ADC1->SMPR1 |= (7 << 9);  // Ch 3 (PC2)
-     ADC1->SMPR2 |= (7 << 18); // Ch 16 (PB1)
-
-     // 6. Sequence Configuration (SQR1)
-     ADC1->SQR1 &= ~(0xF);
-     ADC1->SQR1 |= 2; // Length = 3 conversions (L=2 means 3)
-
-     ADC1->SQR1 &= ~(0x1FFFF << 6);
-     ADC1->SQR1 |= (6 << 6);   // SQ1 = 6 (PA1)
-     ADC1->SQR1 |= (16 << 12); // SQ2 = 16 (PB1)
-     ADC1->SQR1 |= (3 << 18);  // SQ3 = 3 (PC2)
-
-     // 7. Calibration
-     ADC1->CR |= (1 << 31); // ADCAL
-     while ((ADC1->CR & (1 << 31)) != 0);
-
-     // 8. Enable ADC
-     ADC1->CR |= (1 << 0); // ADEN
-     while ((ADC1->ISR & (1 << 0)) == 0); // Wait for ADRDY
-
-     // 9. Start & Interrupts
-     ADC1->IER |= (1 << 2);              // Enable EOC (End of Conversion) interrupt
-     NVIC_ISER1 |= (1 << 5);             // Enable ADC IRQ in NVIC (IRQ 18?)
-
-     ADC1->CR |= (1 << 2);               // ADSTART - Start first conversion sequence
- }
-
 
  /**
   * @brief PI 1: Initializes TIM6 to generate an overflow event every 1ms.
@@ -605,6 +553,49 @@ void init_buzzer_gpio(void) {
 
  // MOCK (PI 3): Initializes the accelerometer sensor
  void init_accelerometer(void) {
+	 // 1. Setup GPIOs for Analog Mode
+	  RCC_AHB2ENR |= (1 << 0) | (1 << 1) | (1 << 2); // Enable GPIO A, B, C
+	  GPIOA_PTR->MODER |= (3 << 2);       // PA1 Analog
+	  GPIOB_PTR->MODER |= (3 << 2);       // PB1 Analog
+	  GPIOC_PTR->MODER |= (3 << 4);       // PC2 Analog
+
+	  // 2. Enable ADC Clock
+	  RCC_AHB2ENR |= (1 << 13);
+
+	  // 3. Power up ADC (Deep Power Down exit)
+	  ADC1->CR &= ~(1 << 29); // DEEPPWD = 0
+	  ADC1->CR |= (1 << 28);  // ADVREGEN = 1
+
+	  // 4. Clock Configuration
+	  RCC_CCIPR1 |= (3 << 28); // ADCSEL
+	  ADC_COMMON->CCR |= (3 << 16); // CKMODE
+
+	  // 5. Sampling Time Configuration
+	  ADC1->SMPR1 |= (7 << 18); // Ch 6 (PA1)
+	  ADC1->SMPR1 |= (7 << 9);  // Ch 3 (PC2)
+	  ADC1->SMPR2 |= (7 << 18); // Ch 16 (PB1)
+
+	  // 6. Sequence Configuration (SQR1)
+	  ADC1->SQR1 &= ~(0xF);
+	  ADC1->SQR1 |= 2; // Length = 3 conversions (L=2 means 3)
+
+	  ADC1->SQR1 &= ~(0x1FFFF << 6);
+	  ADC1->SQR1 |= (6 << 6);   // SQ1 = 6 (PA1)
+	  ADC1->SQR1 |= (16 << 12); // SQ2 = 16 (PB1)
+	  ADC1->SQR1 |= (3 << 18);  // SQ3 = 3 (PC2)
+
+	  // 7. Calibration
+	  ADC1->CR |= (1 << 31); // ADCAL
+	  while ((ADC1->CR & (1 << 31)) != 0);
+
+	  // 8. Enable ADC
+	  ADC1->CR |= (1 << 0); // ADEN
+	  while ((ADC1->ISR & (1 << 0)) == 0); // Wait for ADRDY
+
+	  // 9. Start & Interrupts
+	  ADC1->IER |= (1 << 2);              // Enable EOC (End of Conversion) interrupt
+	  NVIC_ISER1 |= (1 << 5);             // Enable ADC IRQ in NVIC (IRQ 18?)
+
  }
 
  // PI 2: Initializes the vibration sensor on PA2 for TIM15_CH1 Input Capture
@@ -656,7 +647,8 @@ void init_vibration_sensor(void) {
 
  // MOCK (PI 3): Adds new raw acceleration data to the sliding window
  void add_acceleration_to_window(AccelerometerData accel_data) {
-     g_acceleration_window_count++;
+	 g_acceleration_window[g_acceleration_window_index] = accel_data;
+     g_acceleration_window_index++;
  }
 
  // MOCK (PI 3): Computes a pattern value from the raw acceleration window data
@@ -952,8 +944,7 @@ void init_vibration_sensor(void) {
          // If we have read all 3 channels in the sequence
          if (adc_seq_index >= 3)
          {
-        	 g_acceleration_window[g_acceleration_window_index] = g_raw_accel_data;
-        	 g_acceleration_window_index++;
+        	 add_acceleration_to_window(g_raw_accel_data);
              adc_seq_index = 0;
          }
      }
@@ -1051,7 +1042,6 @@ void TIM15_IRQHandler(void) {
      init_accelerometer();    // PI 3: Mock
      init_vibration_sensor(); // PI 2: Complete
      init_buzzer();           // PI 2: Complete
-     init_ADC();
      init_bluetooth_module(); // PI 3: Mock
 
      // --- PI 1: Set Initial State ---
