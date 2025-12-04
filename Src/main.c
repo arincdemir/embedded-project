@@ -299,7 +299,7 @@ typedef struct {
 
 // --- RCC Enable Bit for USART3 ---
 #define RCC_APB1ENR1_USART3EN (1 << 18) // Bit 18
-#define USART3_IRQn 39                  // Interrupt Number
+#define USART3_IRQn 63                  // Interrupt Number
 
 // --- NVIC (Nested Vectored Interrupt Controller) Registers ---
 #define NVIC_ISER0      *((volatile uint32_t *) 0xE000E100) // Interrupt Set Enable Register 0
@@ -713,10 +713,10 @@ void init_vibration_sensor(void) {
      GPIOB_PTR->AFRH &= ~((0xF << 8) | (0xF << 12)); // Clear old settings
      GPIOB_PTR->AFRH |=  ((0x7 << 8) | (0x7 << 12)); // Set AF7 (0111)
 
-     // 4. Set Baud Rate to 9600
-     // Clock = 4MHz (MSI). BRR = 4,000,000 / 9600 = 416.6 -> 417
-     // Note: If your HC-05 is set to 38400, change this to 104.
-     USART3->BRR = 417;
+     // 4. Set Baud Rate to 38400 (HC-05 Default)
+     // Formula: F_clk / Baud. Assuming F_clk is 4MHz based on your previous code.
+     // 4,000,000 / 38400 ~= 104.16. Round to 104 (0x68).
+     USART3->BRR = 104;
 
      // 5. Enable RX Interrupt (RXNEIE)
      USART3->CR1 |= (1 << 5);
@@ -725,8 +725,8 @@ void init_vibration_sensor(void) {
      USART3->CR1 |= (1 << 3) | (1 << 2) | (1 << 0);
 
      // 7. Enable USART3 Interrupt in NVIC
-     // IRQ 39. 39 - 32 = 7. It is Bit 7 of ISER1.
-     NVIC_ISER1 |= (1 << 7);
+     // IRQ 63. 63 - 32 = 31. It is Bit 31 of ISER1.
+     NVIC_ISER1 |= (1 << 31);
  }
 
  // MOCK (PI 3): Initializes the Bluetooth module
