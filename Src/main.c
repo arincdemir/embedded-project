@@ -85,7 +85,7 @@
  #define ACCELERATION_WINDOW_SIZE 20
 
  // The threshold for the computed acceleration pattern value to trigger the alarm
- #define ACCELERATION_PATTERN_THRESHOLD 0.05f
+ #define ACCELERATION_PATTERN_THRESHOLD 30000.0f
 
  // Interval in milliseconds between accelerometer readings in monitoring mode
  #define ACCELEROMETER_READ_INTERVAL_MS 200
@@ -784,24 +784,29 @@ void init_vibration_sensor(void) {
  // MOCK (PI 3): Computes a pattern value from the raw acceleration window data
  float compute_acceleration_pattern(void) {
 
-	 float accelx_g = 0;
-	 float accely_g = 0;
-	 float accelz_g = 0;
-	 float magnitude = 0;
-
-	 float sum_square_deviations = 0.0;
+	 uint32_t sum_x = 0;
+	 uint32_t sum_y = 0;
+	 float sum_square_deviations_x = 0.0;
+	 float sum_square_deviations_y = 0.0;
 	 for (int i = 0; i < ACCELERATION_WINDOW_SIZE - 1; i++) {
-		 accelx_g = (float)g_acceleration_window[i].x / 409.6 - 5.0;
-		 accely_g = (float)g_acceleration_window[i].y / 409.6 - 5.0;
-		 accelz_g = (float)g_acceleration_window[i].z / 220.0 - 5.55;
-
-		 magnitude = (accelx_g * accelx_g) + (accely_g * accely_g) + (accelz_g * accelz_g);
-
-		 float deviation = (magnitude - 1.0);
-		 sum_square_deviations += deviation * deviation;
+		 sum_x += g_acceleration_window[i].x;
+		 sum_y += g_acceleration_window[i].y;
 	 }
-	 float variance = sum_square_deviations / ACCELERATION_WINDOW_SIZE;
-     return variance; // Mock pattern value
+	 float mean_x = sum_x / ACCELERATION_WINDOW_SIZE;
+	 float mean_y = sum_y / ACCELERATION_WINDOW_SIZE;
+	 for (int i = 0; i < ACCELERATION_WINDOW_SIZE - 1; i++) {
+	 		 float deviation_x = g_acceleration_window[i].x - mean_x;
+	 		 sum_square_deviations_x += deviation_x * deviation_x;
+	 		float deviation_y = g_acceleration_window[i].y - mean_y;
+			 sum_square_deviations_y += deviation_y * deviation_y;
+	 	 }
+
+
+	 float variance_x = sum_square_deviations_x / ACCELERATION_WINDOW_SIZE;
+	 float variance_y = sum_square_deviations_y / ACCELERATION_WINDOW_SIZE;
+
+
+     return variance_x + variance_y; // Mock pattern value
  }
 
 
@@ -920,8 +925,6 @@ void init_vibration_sensor(void) {
 				 g_keypad_tick_counter = 0; // Reset timer
 				 g_keypad_state = KEYPAD_STATE_FIRST_CHECK;
 
-				 // DEBUG: Turn on Blue LED to prove we found a key
-				 GPIOA_ODR &= ~(1 << 4);
 			 }
 			 break;
 
@@ -946,8 +949,6 @@ void init_vibration_sensor(void) {
 				 } else {
 					  // It was noise, go back to IDLE
 					  g_keypad_state = KEYPAD_STATE_IDLE;
-					  // Turn off Blue LED
-					  GPIOA_ODR |= (1 << 4);
 				 }
 			 }
 			 break;
@@ -958,8 +959,6 @@ void init_vibration_sensor(void) {
 				 // User let go of button
 				 g_keypad_state = KEYPAD_STATE_IDLE;
 				 // Turn off Blue LED
-				 GPIOA_ODR |= (1 << 4);
-
 
 				 if (g_last_read_key == '#') {
 					 // ENTER ('#') was pressed, check the password
