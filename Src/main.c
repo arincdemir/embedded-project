@@ -1,23 +1,4 @@
 
-
-
-
-
-
-
-
-
-// DO NOT REMOVE CHECKADRESSES WITHOUT CHECKING ALL RELEVANT ADDRESSES AT "#CHECKADRESS" POINTS
-
-
-
-
-
-
-
-
-
-
 /*
  * CmpE443 - PI 1: GPIO and Timer Implementation
  * ------------------------------------------------
@@ -63,8 +44,6 @@
  // 1. System Parameters (Mock Values for PI 3)
  //=============================================================================
 
- // The duration in seconds that acceleration must be continuously detected before the alarm is triggered
- #define ACCELERATION_TIME_THRESHOLD_S 3
 
  // The initial correct password for disarming the alarm via Keypad
  #define INITIAL_CORRECT_PASSWORD "1234"
@@ -72,8 +51,6 @@
  // Buffer size for storing the password input from the keypad
  #define PASSWORD_BUFFER_SIZE 10
 
- // A mock threshold for the accelerometer's ADC reading to be considered as significant motion
- #define ACCELERATION_ADC_THRESHOLD 50
 
  // The number of vibration pulses required to trigger the monitoring state within the reset interval
  #define VIBRATION_PULSE_THRESHOLD 180
@@ -85,7 +62,7 @@
  #define ACCELERATION_WINDOW_SIZE 20
 
  // The threshold for the computed acceleration pattern value to trigger the alarm
- #define ACCELERATION_PATTERN_THRESHOLD 30000.0f
+ #define ACCELERATION_PATTERN_THRESHOLD 28000.0f
 
  // Interval in milliseconds between accelerometer readings in monitoring mode
  #define ACCELEROMETER_READ_INTERVAL_MS 200
@@ -239,13 +216,6 @@ typedef struct {
 
 #define TIM15           ((TIM15_General_Purpose_Type *) 0x40014000)
 
-// --- PI 1 (for PI 3): TIM7 (ADC Trigger Timer) Registers ---
-// Base: 0x4000 1400
-#define RCC_APB1ENR1_TIM7EN (1 << 5) // TIM7 Clock Enable Bit
-#define TIM7_CR1        *((volatile uint32_t *) 0x40001400)
-#define TIM7_SR         *((volatile uint32_t *) 0x40001410)
-#define TIM7_PSC        *((volatile uint32_t *) 0x40001428)
-#define TIM7_ARR        *((volatile uint32_t *) 0x4000142C)
 
 // --- PI 2: TIM16 (Buzzer PWM Timer) Registers ---
 // Base: 0x4001 4400
@@ -484,29 +454,7 @@ void init_PI2_Timer(void) {
     TIM15->CR1 |= (1 << 0);          // CEN = 1 (enable counter)
 }
 
-/**
- * @brief PI 1: Initializes TIM7 for PI 3 (ADC Sampling Trigger).
- * Enables the clock and sets values for ACCELEROMETER_READ_INTERVAL_MS.
- * This timer is NOT STARTED (CEN=0).
- */
-void init_PI3_Timer(void) {
-    // 1. Enable TIM7 clock (Basic Timer)
-    RCC_APB1ENR1 |= RCC_APB1ENR1_TIM7EN;
 
-    // 2. Set PSC/ARR for 200ms (ACCELEROMETER_READ_INTERVAL_MS)
-    // 0.2s = (PSC+1) * (ARR+1) / 4,000,000 Hz
-    // (PSC+1) * (ARR+1) = 800,000
-    // Let PSC = 3999 (div by 4000), ARR = 199 (count 200)
-    // (3999+1) * (199+1) = 4000 * 200 = 800,000. Correct.
-    TIM7_PSC = 3999;
-    TIM7_ARR = 199;
-
-    // 3. Ensure Update Event is enabled (UDIS=0)
-    TIM7_CR1 &= ~(1 << 1);
-
-    // 4. DO NOT START THE TIMER (CEN remains 0).
-    // PI 3 will enable this (or link it to ADC) when ready.
-}
 
 /**
  * @brief PI 2: Initializes TIM16 for buzzer PWM output.
@@ -601,51 +549,55 @@ void init_buzzer_gpio(void) {
  }
 
  //=============================================================================
- // 4. IMPLEMENTATION & MOCK FUNCTIONS (PI 2 Complete, PI 3 Mock)
+ // 4. IMPLEMENTATION
  //=============================================================================
 
- // MOCK (PI 3): Initializes the accelerometer sensor
+ /**
+  * @brief PI 3: Initializes ADC for the ACCELEROMETER.
+  * - PA2 (x), PB2 (y), PC4 (z)
+  * -
+  */
  void init_accelerometer(void) {
-	 // 1. Setup GPIOs for Analog Mode
+	 // Setup GPIOs for Analog Mode
 	  RCC_AHB2ENR |= (1 << 0) | (1 << 1) | (1 << 2); // Enable GPIO A, B, C
-	  GPIOA_PTR->MODER |= (3 << 2);       // PA1 Analog
-	  GPIOB_PTR->MODER |= (3 << 2);       // PB1 Analog
-	  GPIOC_PTR->MODER |= (3 << 4);       // PC2 Analog
+	  GPIOA_PTR->MODER |= (3 << 2);       // PA1 Analog -> x
+	  GPIOB_PTR->MODER |= (3 << 2);       // PB1 Analog	-> y
+	  GPIOC_PTR->MODER |= (3 << 4);       // PC2 Analog -> z
 
-	  // 2. Enable ADC Clock
+	  // Enable ADC Clock
 	  RCC_AHB2ENR |= (1 << 13);
 
-	  // 3. Power up ADC (Deep Power Down exit)
+	  // Power up ADC (Deep Power Down exit)
 	  ADC1->CR &= ~(1 << 29); // DEEPPWD = 0
 	  ADC1->CR |= (1 << 28);  // ADVREGEN = 1
 
-	  // 4. Clock Configuration
+	  // Clock Configuration
 	  RCC_CCIPR1 |= (3 << 28); // ADCSEL
 	  ADC_COMMON->CCR |= (3 << 16); // CKMODE
 
-	  // 5. Sampling Time Configuration
+	  // Sampling Time Configuration
 	  ADC1->SMPR1 |= (7 << 18); // Ch 6 (PA1)
 	  ADC1->SMPR1 |= (7 << 9);  // Ch 3 (PC2)
 	  ADC1->SMPR2 |= (7 << 18); // Ch 16 (PB1)
 
-	  // 6. Sequence Configuration (SQR1)
+	  // Sequence Configuration (SQR1)
 	  ADC1->SQR1 &= ~(0xF);
-	  ADC1->SQR1 |= 2; // Length = 3 conversions (L=2 means 3)
+	  ADC1->SQR1 |= 2; // Length = 3 conversions
 
 	  ADC1->SQR1 &= ~(0x1FFFF << 6);
 	  ADC1->SQR1 |= (6 << 6);   // SQ1 = 6 (PA1)
 	  ADC1->SQR1 |= (16 << 12); // SQ2 = 16 (PB1)
 	  ADC1->SQR1 |= (3 << 18);  // SQ3 = 3 (PC2)
 
-	  // 7. Calibration
+	  // Calibration
 	  ADC1->CR |= (1 << 31); // ADCAL
 	  while ((ADC1->CR & (1 << 31)) != 0);
 
-	  // 8. Enable ADC
+	  // Enable ADC
 	  ADC1->CR |= (1 << 0); // ADEN
 	  while ((ADC1->ISR & (1 << 0)) == 0); // Wait for ADRDY
 
-	  // 9. Start & Interrupts
+	  // Start & Interrupts
 	  ADC1->IER |= (1 << 2);              // Enable EOC (End of Conversion) interrupt
 	  NVIC_ISER1 |= (1 << 5);             // Enable ADC IRQ in NVIC (IRQ 18?)
 
@@ -676,46 +628,43 @@ void init_vibration_sensor(void) {
      init_buzzer_timer();  // Configure TIM16 for PWM
  }
 
+
+
  /**
-  * @brief PI 3: Real Initialization for Bluetooth via USART3 (PB10/PB11)
-  * Baud Rate: 9600
+  * @brief PI 3: Initialization for Bluetooth via USART3 (PB10/PB11)
+  * Baud Rate: 38400
   * Interrupts: RXNE Enabled
   */
- void init_USART3_Bluetooth(void) {
-     // 1. Enable Clocks
-     RCC_AHB2ENR |= (1 << 1);               // Enable GPIOB Clock (Bit 1)
-     RCC_APB1ENR1 |= RCC_APB1ENR1_USART3EN; // Enable USART3 Clock
-
-     // 2. Configure PB10 (TX) and PB11 (RX)
-     // Clear Mode Bits for Pin 10 and 11
-     GPIOB_PTR->MODER &= ~((3 << (10*2)) | (3 << (11*2)));
-     // Set to Alternate Function Mode (10)
-     GPIOB_PTR->MODER |=  ((2 << (10*2)) | (2 << (11*2)));
-
-     // 3. Set Alternate Function to AF7 (USART3)
-     // PB10 is in AFRH (pins 8-15). PB10 is bits [11:8], PB11 is bits [15:12]
-     GPIOB_PTR->AFRH &= ~((0xF << 8) | (0xF << 12)); // Clear old settings
-     GPIOB_PTR->AFRH |=  ((0x7 << 8) | (0x7 << 12)); // Set AF7 (0111)
-
-     // 4. Set Baud Rate to 38400 (HC-05 Default)
-     // Formula: F_clk / Baud. Assuming F_clk is 4MHz based on your previous code.
-     // 4,000,000 / 38400 ~= 104.16. Round to 104 (0x68).
-     USART3->BRR = 104;
-
-     // 5. Enable RX Interrupt (RXNEIE)
-     USART3->CR1 |= (1 << 5);
-
-     // 6. Enable UART (TE=1, RE=1, UE=1)
-     USART3->CR1 |= (1 << 3) | (1 << 2) | (1 << 0);
-
-     // 7. Enable USART3 Interrupt in NVIC
-     // IRQ 63. 63 - 32 = 31. It is Bit 31 of ISER1.
-     NVIC_ISER1 |= (1 << 31);
- }
-
- // MOCK (PI 3): Initializes the Bluetooth module
  void init_bluetooth_module(void) {
-	 init_USART3_Bluetooth();
+	 // Enable Clocks
+	  RCC_AHB2ENR |= (1 << 1);               // Enable GPIOB Clock (Bit 1)
+	  RCC_APB1ENR1 |= RCC_APB1ENR1_USART3EN; // Enable USART3 Clock
+
+	  // Configure PB10 (TX) and PB11 (RX)
+	  // Clear Mode Bits for Pin 10 and 11
+	  GPIOB_PTR->MODER &= ~((3 << (10*2)) | (3 << (11*2)));
+	  // Set to Alternate Function Mode (10)
+	  GPIOB_PTR->MODER |=  ((2 << (10*2)) | (2 << (11*2)));
+
+	  // Set Alternate Function to AF7 (USART3)
+	  // PB10, PB11 are in AFRH). PB10 is bits [11:8], PB11 is bits [15:12]
+	  GPIOB_PTR->AFRH &= ~((0xF << 8) | (0xF << 12)); // Clear old settings
+	  GPIOB_PTR->AFRH |=  ((0x7 << 8) | (0x7 << 12)); // Set AF7 (0111)
+
+	  // Set Baud Rate to 38400 (HC-05 Default)
+	  // Formula: F_clk / Baud. F_clk is 4MHz.
+	  // 4,000,000 / 38400 ~= 104.16. Round to 104.
+	  USART3->BRR = 104;
+
+	  // Enable RX Interrupt (RXNEIE)
+	  USART3->CR1 |= (1 << 5);
+
+	  // Enable UART (TE=1, RE=1, UE=1)
+	  USART3->CR1 |= (1 << 3) | (1 << 2) | (1 << 0);
+
+	  // Enable USART3 Interrupt in NVIC
+	  // IRQ 63. 63 - 32 = 31. It is Bit 31 of ISER1.
+	  NVIC_ISER1 |= (1 << 31);
  }
 
 
@@ -731,16 +680,16 @@ void init_vibration_sensor(void) {
      }
  }
 
-//=============================================================================
-// PI 3: Bluetooth Command Processor (The Logic Parser)
-//=============================================================================
+ /**
+  * @brief PI 3: Bluetooth Command Parser
+  * Stops when it sees '.' and processes the previously read command.
+  */
   void check_bluetooth_commands(void) {
 
       // Only run if the ISR told us a full command is ready
       if (g_command_ready) {
 
           // --- COMMAND: RESET ALARM (R) ---
-          // Note: Buffer is now just "R" (the '.' was handled in ISR)
           if (g_uart_buffer[0] == 'R') {
               // Disarm system
               g_is_alarm_enabled = false;
@@ -748,7 +697,7 @@ void init_vibration_sensor(void) {
               set_buzzer_state(false);
 
               // Update LEDs to "OFF" state (Red ON, Green OFF)
-              update_system_leds(false);
+              update_system_leds(g_is_alarm_enabled);
 
               // Clear vibration history
               g_vibration_timestamp_count = 0;
@@ -1002,7 +951,7 @@ void init_vibration_sensor(void) {
 
  }
 
- // PI 2 & 3: Manages the alarm logic (PI 2: vibration complete, PI 3: acceleration mock)
+ // PI 2 & 3: Manages the alarm logic (PI 2: vibration complete, PI 3: acceleration)
  void update_alarm_logic(void) {
 
      // No more artificial timer - timestamps handle the 5-second window automatically
@@ -1019,15 +968,14 @@ void init_vibration_sensor(void) {
              break;
 
          case ALARM_STATE_MONITORING:
-             //read_accelerometer_adc(); // PI 3
-             //add_acceleration_to_window(g_raw_accel_data); // PI 3
+        	 // Enter once in every 200 milliseconds
         	 if (adc_tick_counter >= ACCELEROMETER_READ_INTERVAL_MS) {
         		 adc_tick_counter = 0;
+        		 // If the array is full, we can compute the acceleration pattern.
         		 if (g_acceleration_window_index >= ACCELERATION_WINDOW_SIZE) {
-					 g_acceleration_pattern_value = compute_acceleration_pattern(); // PI 3
+					 g_acceleration_pattern_value = compute_acceleration_pattern();
 					 if (g_acceleration_pattern_value >= ACCELERATION_PATTERN_THRESHOLD) {
 						 set_buzzer_state(true); // PI 2
-						 // From project.pdf: Buzzer stays ON until correct password is entered
 					 } else if (!g_buzzer_active) {
 						 // Only return to idle if buzzer is not active
 						 g_current_alarm_state = ALARM_STATE_IDLE;
@@ -1042,6 +990,7 @@ void init_vibration_sensor(void) {
      }
  }
 
+// PI3 Change: we increase two tick counters using the interrupts of TIM6, which arrive every 1ms.
  void TIM6_IRQHandler(void) {
 	 if (TIM6_SR & (1 << 0)) {
 	         TIM6_SR &= ~(1 << 0); // Clear Flag
@@ -1050,7 +999,7 @@ void init_vibration_sensor(void) {
 	 }
  }
 
-
+ // PI3
  // ADC1_2: Accelerometer Reading
  // This ISR runs automatically when ADC conversion is done
  void ADC1_2_IRQHandler(void)
@@ -1083,7 +1032,6 @@ void init_vibration_sensor(void) {
 // 6. PI 2: TIM15 Interrupt Handler for Input Capture
 //=============================================================================
 
-// Global interrupt counter for debugging
 /**
  * @brief TIM15 Interrupt Handler - Captures vibration pulse timestamps
  * This ISR is called on every edge of the vibration sensor
@@ -1155,7 +1103,6 @@ void TIM15_IRQHandler(void) {
 
 
 // PI 3: USART3 Interrupt Handler (Bluetooth Data)
-
 void USART3_IRQHandler(void) {
     // Check if Read Data Register is Not Empty (RXNE)
     if (USART3->ISR & (1 << 5)) {
@@ -1194,7 +1141,6 @@ void USART3_IRQHandler(void) {
      init_rgb_led();        // PI 1: Init LEDs (GPIOA)
      init_TIM6_for_1ms();   // PI 1: Init Timer (TIM6)
      init_PI2_Timer();      // PI 2: Init Timer (TIM15 for vibration IC)
-     init_PI3_Timer();      // PI 3: Init Timer (TIM7 for ADC trigger)
 
      // --- Initialize Peripherals ---
      init_accelerometer();    // PI 3: Mock
@@ -1206,7 +1152,7 @@ void USART3_IRQHandler(void) {
      g_is_alarm_enabled = false;             // Start in OFF state
      update_system_leds(g_is_alarm_enabled); // (Red ON, Green OFF)
 
-     // Main system loop (Bare-metal superloop)
+     // Main system loop: Runs every 1ms using the TIM6 Interrupt.
      while (1) {
     	 __asm volatile ("wfi");
          // PI 1: Poll keypad and process password logic
@@ -1217,7 +1163,7 @@ void USART3_IRQHandler(void) {
              update_alarm_logic();
          }
 
-         // PI 3 Mock: Check for bluetooth commands
+         // PI 3: Check for bluetooth commands
          check_bluetooth_commands();
      }
 
