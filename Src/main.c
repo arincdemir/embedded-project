@@ -425,7 +425,7 @@ void init_PI2_Timer(void) {
     TIM15->ARR = 1999;      // 1 second period for overflow reset
 
     //
-    TIM15->CCR2 = 999;
+    TIM15->CCR2 = 1999;
 
     // 3. Configure Channel 1 for Input Capture
     // CC1S = 01 (IC1 mapped to TI1)
