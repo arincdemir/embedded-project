@@ -298,7 +298,6 @@ typedef struct {
  typedef struct {
      int x;
      int y;
-     int z;
  } AccelerometerData;
 
  char g_last_read_key = '\0';
@@ -560,10 +559,9 @@ void init_buzzer_gpio(void) {
   */
  void init_accelerometer(void) {
 	 // Setup GPIOs for Analog Mode
-	  RCC_AHB2ENR |= (1 << 0) | (1 << 1) | (1 << 2); // Enable GPIO A, B, C
+	  RCC_AHB2ENR |= (1 << 0) | (1 << 1); // Enable GPIO A, B, C
 	  GPIOA_PTR->MODER |= (3 << 2);       // PA1 Analog -> x
 	  GPIOB_PTR->MODER |= (3 << 2);       // PB1 Analog	-> y
-	  GPIOC_PTR->MODER |= (3 << 4);       // PC2 Analog -> z
 
 	  // Enable ADC Clock
 	  RCC_AHB2ENR |= (1 << 13);
@@ -578,17 +576,15 @@ void init_buzzer_gpio(void) {
 
 	  // Sampling Time Configuration
 	  ADC1->SMPR1 |= (7 << 18); // Ch 6 (PA1)
-	  ADC1->SMPR1 |= (7 << 9);  // Ch 3 (PC2)
 	  ADC1->SMPR2 |= (7 << 18); // Ch 16 (PB1)
 
 	  // Sequence Configuration (SQR1)
 	  ADC1->SQR1 &= ~(0xF);
-	  ADC1->SQR1 |= 2; // Length = 3 conversions
+	  ADC1->SQR1 |= 1; // Length = 3 conversions
 
 	  ADC1->SQR1 &= ~(0x1FFFF << 6);
 	  ADC1->SQR1 |= (6 << 6);   // SQ1 = 6 (PA1)
 	  ADC1->SQR1 |= (16 << 12); // SQ2 = 16 (PB1)
-	  ADC1->SQR1 |= (3 << 18);  // SQ3 = 3 (PC2)
 
 	  // Calibration
 	  ADC1->CR |= (1 << 31); // ADCAL
@@ -1041,13 +1037,11 @@ void init_vibration_sensor(void) {
     	 else if (adc_seq_index == 1) {
     		 g_raw_accel_data.y = ADC1->DR;
     	 }
-    	 else if (adc_seq_index == 2) {
-			 g_raw_accel_data.z = ADC1->DR;
-    	 }
+
          adc_seq_index++;
 
          // If we have read all 3 channels in the sequence
-         if (adc_seq_index >= 3)
+         if (adc_seq_index >= 2)
          {
         	 add_acceleration_to_window(g_raw_accel_data);
              adc_seq_index = 0;
