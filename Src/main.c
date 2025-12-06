@@ -62,7 +62,7 @@
  #define ACCELERATION_WINDOW_SIZE 20
 
  // The threshold for the computed acceleration pattern value to trigger the alarm
- #define ACCELERATION_PATTERN_THRESHOLD 28000.0f
+ #define INITIAL_ACCELERATION_PATTERN_THRESHOLD 28000.0f
 
  // Interval in milliseconds between accelerometer readings in monitoring mode
  #define ACCELEROMETER_READ_INTERVAL_MS 200
@@ -307,6 +307,7 @@ typedef struct {
 
  volatile uint8_t adc_seq_index = 0;
  volatile uint32_t adc_tick_counter = 0;
+ volatile float g_acceleration_pattern_threshold = INITIAL_ACCELERATION_PATTERN_THRESHOLD;
 
  // --- PI 1: Keypad Mapping ---
  // Defines the character for each [row][col] intersection
@@ -689,19 +690,19 @@ void init_vibration_sensor(void) {
       // Only run if the ISR told us a full command is ready
       if (g_command_ready) {
 
-          // --- COMMAND: RESET ALARM (R) ---
-          if (g_uart_buffer[0] == 'R') {
-              // Disarm system
-              g_is_alarm_enabled = false;
-              g_current_alarm_state = ALARM_STATE_IDLE;
-              set_buzzer_state(false);
-
-              // Update LEDs to "OFF" state (Red ON, Green OFF)
-              update_system_leds(g_is_alarm_enabled);
-
-              // Clear vibration history
-              g_vibration_timestamp_count = 0;
-              g_vibration_timestamp_index = 0;
+          // --- COMMAND: Read Acceleration Threshold Value) ---
+          if (g_uart_buffer[0] == 'A') {
+              g_acceleration_pattern_threshold = 0.0;
+              // The value starts at index 1 (after 'P')
+              int i = 0;
+              // Safety check: ensure we don't overflow the password buffer
+              // g_uart_buffer is already null terminated by the ISR
+              while (g_uart_buffer[i+1] != '\0' && i < PASSWORD_BUFFER_SIZE - 1) {
+                  g_acceleration_pattern_threshold *= 10.0;
+                  g_acceleration_pattern_threshold += g_uart_buffer[i+1] - '0';
+                  i++;
+              }
+              
           }
 
           // --- COMMAND: CHANGE PASSWORD (Pxxxx) ---
@@ -715,6 +716,32 @@ void init_vibration_sensor(void) {
                   i++;
               }
               g_current_password[i] = '\0'; // Null terminate the new password
+          }
+
+          // --- COMMAND: Read Acceleration Threshold Value ('R') ---
+          else if (g_uart_buffer[0] == 'R') {
+               
+              // Convert the float to an integer string representation
+              int int_threshold = (int)g_acceleration_pattern_threshold;
+              
+              // Use a temporary buffer to hold the ASCII digits
+              char tx_buffer[12]; // Buffer large enough for a 32-bit int
+              int i = 10;
+              tx_buffer[i] = '\0'; // Null-terminate at the end
+              
+              // Convert integer to ASCII string (reversed)
+              if (int_threshold == 0) {
+                  tx_buffer[--i] = '0';
+              } else {
+                  while (int_threshold > 0) {
+                      tx_buffer[--i] = (int_threshold % 10) + '0';
+                      int_threshold /= 10;
+                  }
+              }
+
+              // Transmit the result and a carriage return for formatting
+              USART3_transmit_string(&tx_buffer[i]); // Transmit the number
+              USART3_transmit_string("\r\n");
           }
 
           // --- RESET BUFFER LOGIC ---
@@ -974,7 +1001,7 @@ void init_vibration_sensor(void) {
         		 // If the array is full, we can compute the acceleration pattern.
         		 if (g_acceleration_window_index >= ACCELERATION_WINDOW_SIZE) {
 					 g_acceleration_pattern_value = compute_acceleration_pattern();
-					 if (g_acceleration_pattern_value >= ACCELERATION_PATTERN_THRESHOLD) {
+					 if (g_acceleration_pattern_value >= g_acceleration_pattern_threshold) {
 						 set_buzzer_state(true); // PI 2
 					 } else if (!g_buzzer_active) {
 						 // Only return to idle if buzzer is not active
@@ -1098,6 +1125,19 @@ void TIM15_IRQHandler(void) {
             }
         }
 
+    }
+}
+
+
+/**
+ * @brief PI 3: Transmit a null-terminated string over USART3.
+ * @param str The null-terminated string to transmit.
+ */
+void USART3_transmit_string(const char *str) {
+    for (int i = 0; str[i] != '\0'; i++) {
+         while (!(USART3->ISR & (1 << 7)));
+        // Write data to the Transmit Data Register (TDR)
+        USART3->TDR = str[i];
     }
 }
 
