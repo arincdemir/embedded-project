@@ -53,7 +53,7 @@
 
 
  // The number of vibration pulses required to trigger the monitoring state within the reset interval
- #define VIBRATION_PULSE_THRESHOLD 180
+ #define VIBRATION_PULSE_THRESHOLD 50
 
  // The time interval in seconds after which vibration count is reset
  #define VIBRATION_RESET_INTERVAL_S 1
