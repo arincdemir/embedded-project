@@ -33,6 +33,28 @@
  * 7. System returns to IDLE when acceleration drops below threshold.
  * 8. Buzzer stays ON until correct password entered via keypad.
 
+ * CmpE443 - PI 3: ADC,UART Implementation
+ * ------------------------------------------------
+ * Hardware (PI 3):
+ * - Acceleration Sensor -> ADC1
+ * - Bluetooth Module -> USART3
+ *
+ * PI 3 Accelerometer Logic:
+ * 1. After the vibration sensor takes us to the MONITORING state, the ADC starts
+ * 2. ADC samples are taken every 200 miliseconds. x and y axis values are written to a buffer.
+ * 3. Once the buffer is full, the pattern is calculated. This is basically a statistical variance calculation
+ * 4. If the variance is above a threshold, the alarm is sounded.
+ * 5. Other alarm logic is the same. Entering password disables it.
+ * 
+ * PI3 Bluetooth Logic:
+ * 1. USART3 data is checked by an interrupt.
+ * 2. The values taken are written to a buffer.
+ * 3. If the end of command comes with ".", a global variable is set to allow reading the command.
+ * 4. The command is read and 3 possible actions are taken:
+ * 5. If command starts with "A", the acceleration threshold is set
+ * 6. If command starts with "R", the acceleration threshold is sent to the bluetooth module
+ * 7. If command starts with "P", the current keypad password is changed.
+
  */
 
  #include <stdio.h>
@@ -41,7 +63,7 @@
  #include <string.h>
 
  //=============================================================================
- // 1. System Parameters (Mock Values for PI 3)
+ // 1. System Parameters (Values for PI 3)
  //=============================================================================
 
 
@@ -75,7 +97,7 @@
 
 
  //=============================================================================
- // PI 1&2: BARE-METAL REGISTER DEFINITIONS
+ // PI 1&2&3: BARE-METAL REGISTER DEFINITIONS
  //=============================================================================
 
  // For handling floats
@@ -87,6 +109,7 @@
  #define RCC_AHB2ENR     *((volatile uint32_t *) 0x4002104C) // For GPIOA, GPIOF
  #define RCC_APB1ENR1    *((volatile uint32_t *) 0x40021058) // For TIM6
  #define RCC_APB2ENR     *((volatile uint32_t *) 0x40021060) // For TIM15
+ // PI3 Addition for ADC clock setting
 #define RCC_CCIPR1      *((volatile uint32_t *) 0x40021088) // Added for ADC
 
 
@@ -118,7 +141,7 @@
 // Base: 0x4001 4000
 #define RCC_APB2ENR_TIM15EN (1 << 16) // TIM15 Clock Enable Bit
 
-
+// PI3 Struct types
 typedef struct {
     volatile uint32_t ISR;      // 0x00
     volatile uint32_t IER;      // 0x04
@@ -180,7 +203,7 @@ typedef struct {
     volatile uint32_t SECCFGR;
 } GPIO_Struct;
 
-// Register Pointers for Structs
+// PI3 Register Pointers for Structs
 #define GPIOA_PTR       ((GPIO_Struct *) 0x42020000)
 #define GPIOB_PTR       ((GPIO_Struct *) 0x42020400)
 #define GPIOC_PTR       ((GPIO_Struct *) 0x42020800)
@@ -248,7 +271,7 @@ typedef struct {
 
 #define TIM16           ((TIM16_General_Purpose_Type *) 0x40014400)
 
-// --- USART Register Structure ---   #CHECKADRESS
+// --- PI3: USART Register Structure ---
 typedef struct {
     volatile uint32_t CR1;   // 0x00
     volatile uint32_t CR2;   // 0x04
@@ -264,10 +287,10 @@ typedef struct {
     volatile uint32_t PRESC; // 0x2C
 } USARTType;
 
-// --- USART3 Base Address (APB1) ---
+// --- PI3: USART3 Base Address (APB1) ---
 #define USART3 ((USARTType *) 0x40004800)
 
-// --- RCC Enable Bit for USART3 ---
+// --- PI3: RCC Enable Bit for USART3 ---
 #define RCC_APB1ENR1_USART3EN (1 << 18) // Bit 18
 #define USART3_IRQn 63                  // Interrupt Number
 
@@ -276,6 +299,7 @@ typedef struct {
 #define ISER2           *((volatile uint32_t *) 0xE000E108) // Interrupt Set Enable Register 2
 #define TIM15_IRQn      5   // TIM15 interrupt number (bit 5 in ISER2)
 #define TIM6_IRQn		17
+// PI3 Addition
 #define NVIC_ISER1      *((volatile uint32_t *) 0xE000E104)
 
  //=============================================================================
@@ -288,13 +312,14 @@ typedef struct {
      ALARM_STATE_MONITORING  // Vibration detected, now checking for acceleration
  } AlarmState;
 
+ // PI3 Additions
  typedef enum {
      KEYPAD_STATE_IDLE,       // Waiting for an initial trigger (vibration)
      KEYPAD_STATE_FIRST_CHECK,  // Vibration detected, now checking for acceleration
 	 KEYPAD_STATE_WAIT_RELEASE,
  } KeypadState;
 
- // A structure to hold the raw 3-axis data from the accelerometer
+ // A structure to hold the raw 2-axis data from the accelerometer
  typedef struct {
      int x;
      int y;
@@ -307,6 +332,8 @@ typedef struct {
  volatile uint8_t adc_seq_index = 0;
  volatile uint32_t adc_tick_counter = 0;
  volatile float g_acceleration_pattern_threshold = INITIAL_ACCELERATION_PATTERN_THRESHOLD;
+// PI3 Additions End.
+
 
  // --- PI 1: Keypad Mapping ---
  // Defines the character for each [row][col] intersection
@@ -379,8 +406,8 @@ typedef struct {
  // Flag to track if buzzer is currently high pitch or low pitch
  bool high = false;
 
+ // PI3 Additions 
  // --- Bluetooth / Command Globals ---
-  // Changed to small linear buffer as requested
   #define UART_BUFFER_SIZE 15
   volatile char g_uart_buffer[UART_BUFFER_SIZE];
   volatile uint8_t g_uart_index = 0;
@@ -388,6 +415,7 @@ typedef struct {
 
   // Current Password (Modifiable) - Default is "1234"
   char g_current_password[PASSWORD_BUFFER_SIZE] = INITIAL_CORRECT_PASSWORD;
+ // End of PI3 Changes
 
  //=============================================================================
  // 3. PI 1&2: IMPLEMENTATION - Initialization Functions
@@ -586,13 +614,20 @@ void init_buzzer_gpio(void) {
 	  ADC1->SQR1 |= (6 << 6);   // SQ1 = 6 (PA1)
 	  ADC1->SQR1 |= (16 << 12); // SQ2 = 16 (PB1)
 
+	  __asm volatile ("CPSIE i"); // enable interrupts for TIM6
 	  // Calibration
 	  ADC1->CR |= (1 << 31); // ADCAL
-	  while ((ADC1->CR & (1 << 31)) != 0);
+	  while ((ADC1->CR & (1 << 31)) != 0){
+		  __asm volatile ("wfi");		//TIM6 is already enabled to produce interrupts every 1ms
+	  };
 
 	  // Enable ADC
 	  ADC1->CR |= (1 << 0); // ADEN
-	  while ((ADC1->ISR & (1 << 0)) == 0); // Wait for ADRDY
+	  while ((ADC1->ISR & (1 << 0)) == 0) {
+		  __asm volatile ("wfi");	//TIM6 is already enabled to produce interrupts
+	  }; // Wait for ADRDY
+
+	  __asm volatile ("CPSID i"); // disable interrupts
 
 	  // Start & Interrupts
 	  ADC1->IER |= (1 << 2);              // Enable EOC (End of Conversion) interrupt
@@ -747,13 +782,14 @@ void init_vibration_sensor(void) {
       }
   }
 
- // MOCK (PI 3): Adds new raw acceleration data to the sliding window
+ // (PI 3): Adds new raw acceleration data to the sliding window
  void add_acceleration_to_window(AccelerometerData accel_data) {
 	 g_acceleration_window[g_acceleration_window_index] = accel_data;
      g_acceleration_window_index++;
  }
 
- // MOCK (PI 3): Computes a pattern value from the raw acceleration window data
+ // (PI 3): Computes a pattern value from the raw acceleration window data
+ // We calculate the statistical variation of x and y acceleration measurements.
  float compute_acceleration_pattern(void) {
 
 	 uint32_t sum_x = 0;
@@ -818,7 +854,7 @@ void init_vibration_sensor(void) {
 
 
  //=============================================================================
- // 5. PI 1&2: IMPLEMENTATION - Core Functionality
+ // 5. PI 1&2&3: IMPLEMENTATION - Core Functionality
  //=============================================================================
 
  /**
@@ -851,6 +887,7 @@ void init_vibration_sensor(void) {
      GPIOA_ODR &= ~(1 << 4); // PA4 (Blue) LOW -> ON
  }
 
+ // PI3: Removed the busy waits for debouncing. Now it just reads the value at that exact time.
  char read_keypad_input(void) {
      const uint16_t ALL_COLS = g_col_pins[0] | g_col_pins[1] | g_col_pins[2];
 
@@ -878,8 +915,10 @@ void init_vibration_sensor(void) {
 
 
   /**
-   * @brief PI 1&2: Processes keypad input, buffers keys, and checks password.
+   *  PI 1&2: Processes keypad input, buffers keys, and checks password.
    * This is the core logic for PI 1, matching the project flowchart.
+   * PI3: Changes were made to remove busy waits for the debouncing. 
+   * Now we have a keypad state machine for handling the debouncing.
    */
   void process_keypad_input_with_password(void) {
 	 char key;
@@ -904,20 +943,14 @@ void init_vibration_sensor(void) {
 			 // This code runs every loop now until counter >= 50
 
 			 // Check if 50ms (debouncing time) has passed
-			 // NOTE: 1000ms is 1 second, that is too long for a button press!
-			 // Use 50ms for debouncing.
 			 if(g_keypad_tick_counter >= 50) {
 
 				 // Double check the key
 				 key = read_keypad_input();
 
 				 if (key == g_last_read_key) {
-					  // Confirmed! It wasn't noise.
-					  // Handle the password logic here...
-					  // handle_password(key);
 
-					  // Move to wait release so we don't spam input
-					  g_keypad_state = KEYPAD_STATE_WAIT_RELEASE;
+                    g_keypad_state = KEYPAD_STATE_WAIT_RELEASE;
 				 } else {
 					  // It was noise, go back to IDLE
 					  g_keypad_state = KEYPAD_STATE_IDLE;
@@ -925,12 +958,11 @@ void init_vibration_sensor(void) {
 			 }
 			 break;
 
-		 case KEYPAD_STATE_WAIT_RELEASE: // Actually "WAIT_RELEASE"
+		 case KEYPAD_STATE_WAIT_RELEASE:
 			 key = read_keypad_input();
 			 if (key == '\0') {
 				 // User let go of button
 				 g_keypad_state = KEYPAD_STATE_IDLE;
-				 // Turn off Blue LED
 
 				 if (g_last_read_key == '#') {
 					 // ENTER ('#') was pressed, check the password
@@ -1013,7 +1045,7 @@ void init_vibration_sensor(void) {
      }
  }
 
-// PI3 Change: we increase two tick counters using the interrupts of TIM6, which arrive every 1ms.
+// PI3 Addition: We increase two tick counters using the interrupts of TIM6, which arrive every 1ms.
  void TIM6_IRQHandler(void) {
 	 if (TIM6_SR & (1 << 0)) {
 	         TIM6_SR &= ~(1 << 0); // Clear Flag
@@ -1022,7 +1054,7 @@ void init_vibration_sensor(void) {
 	 }
  }
 
- // PI3
+ // PI3:
  // ADC1_2: Accelerometer Reading
  // This ISR runs automatically when ADC conversion is done
  void ADC1_2_IRQHandler(void)
@@ -1156,9 +1188,7 @@ void USART3_IRQHandler(void) {
                 if (g_uart_index < (UART_BUFFER_SIZE - 1)) {
                     g_uart_buffer[g_uart_index++] = data;
                 }
-                // If buffer overflows, we just ignore extra chars until '.' comes
-                // or you could reset index here to be safe:
-                // else { g_uart_index = 0; }
+                
             }
         }
     }
@@ -1170,6 +1200,8 @@ void USART3_IRQHandler(void) {
 
  int main() {
 	 CPACR |= (0xF <<20);
+
+	 __asm volatile ("CPSID i");
      // --- PI 1&2: Initialize Hardware ---
      init_keypad();         // PI 1: Init Keypad (GPIOF)
      init_rgb_led();        // PI 1: Init LEDs (GPIOA)
@@ -1185,9 +1217,12 @@ void USART3_IRQHandler(void) {
      // --- PI 1: Set Initial State ---
      g_is_alarm_enabled = false;             // Start in OFF state
      update_system_leds(g_is_alarm_enabled); // (Red ON, Green OFF)
+	 __asm volatile ("CPSIE i");
+
 
      // Main system loop: Runs every 1ms using the TIM6 Interrupt.
      while (1) {
+         // PI3: Added wait for interrupt because we moved into a global tick interrupt with TIM6
     	 __asm volatile ("wfi");
          // PI 1: Poll keypad and process password logic
          process_keypad_input_with_password();
