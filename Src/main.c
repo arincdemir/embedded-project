@@ -733,6 +733,9 @@ void init_vibration_sensor(void) {
                   g_acceleration_pattern_threshold += g_uart_buffer[i+1] - '0';
                   i++;
               }
+              USART3_transmit_string("Threshold Changed To:");
+              USART3_transmit_string(&g_uart_buffer[1]);
+              USART3_transmit_string("\r\n");
               
           }
 
@@ -747,6 +750,9 @@ void init_vibration_sensor(void) {
                   i++;
               }
               g_current_password[i] = '\0'; // Null terminate the new password
+              USART3_transmit_string("Password Changed To:");
+			  USART3_transmit_string(&g_uart_buffer[1]);
+              USART3_transmit_string("\r\n");
           }
 
           // --- COMMAND: Read Acceleration Threshold Value ('R') ---
@@ -771,6 +777,7 @@ void init_vibration_sensor(void) {
               }
 
               // Transmit the result and a carriage return for formatting
+              USART3_transmit_string("New Threshold:");
               USART3_transmit_string(&tx_buffer[i]); // Transmit the number
               USART3_transmit_string("\r\n");
           }
