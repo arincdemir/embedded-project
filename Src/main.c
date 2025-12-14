@@ -141,6 +141,27 @@
 // Base: 0x4001 4000
 #define RCC_APB2ENR_TIM15EN (1 << 16) // TIM15 Clock Enable Bit
 
+// FINAL PRESENTATION ADDITIONS
+typedef struct {
+    volatile uint32_t CR1;   // 0
+    volatile uint32_t CR2;   // 4
+    volatile uint32_t CR3;   // 8
+    volatile uint32_t BRR;   // C
+    uint32_t reserved1[2];   // 10 14
+    volatile uint32_t RQR;   // 18
+    volatile uint32_t ISR;   // 1C
+    volatile uint32_t ICR;   // 20
+    volatile uint32_t RDR;   // 24
+    volatile uint32_t TDR;   // 28
+    volatile uint32_t PRESC; // 2C
+} LPUARTType;
+
+#define LPUART1 ((LPUARTType *) 0x40008000)
+#define PWR_CR1 *((volatile uint32_t *) 0x40007000)
+#define RCC_APB1ENR2 *((volatile uint32_t *) 0x4002105C)
+// FINAL PRESENTATION ADDITIONS END
+
+
 // PI3 Struct types
 typedef struct {
     volatile uint32_t ISR;      // 0x00
@@ -413,6 +434,15 @@ typedef struct {
   volatile uint8_t g_uart_index = 0;
   volatile bool g_command_ready = false; // Flag to tell Main Loop "We have a command"
 
+  // FINAL PRESENTATION ADDITIONS
+  // TX Globals (New for non-blocking transmit)
+  #define TX_BUFFER_SIZE 32
+  volatile char tx_buffer[TX_BUFFER_SIZE];
+  volatile int tx_head = 0; // Where we write new data
+  volatile int tx_tail = 0; // Where ISR reads data to send
+  // FINAL PRESENTATION ADDITIONS END
+
+
   // Current Password (Modifiable) - Default is "1234"
   char g_current_password[PASSWORD_BUFFER_SIZE] = INITIAL_CORRECT_PASSWORD;
  // End of PI3 Changes
@@ -663,40 +693,47 @@ void init_vibration_sensor(void) {
 
 
  /**
-  * @brief PI 3: Initialization for Bluetooth via USART3 (PB10/PB11)
+  * @brief FINAL PRESENTATION: Initialization for Bluetooth via LPUART (PB10/PB11)
+  * It used to be USART3 in PI3
   * Baud Rate: 38400
-  * Interrupts: RXNE Enabled
   */
  void init_bluetooth_module(void) {
+	 // Enable Clock
+	 RCC_APB1ENR1 |= (1 << 28);
+
+	 // Change the regulator mode to Low-power mode.
+	  PWR_CR1 |= (1 << 14);
+
 	 // Enable Clocks
 	  RCC_AHB2ENR |= (1 << 1);               // Enable GPIOB Clock (Bit 1)
-	  RCC_APB1ENR1 |= RCC_APB1ENR1_USART3EN; // Enable USART3 Clock
 
-	  // Configure PB10 (TX) and PB11 (RX)
+	  // Enable Clock for LPUART.
+	  RCC_APB1ENR2 |= 1;
+
+	  // Configure PB10 (RX) and PB11 (TX)
 	  // Clear Mode Bits for Pin 10 and 11
 	  GPIOB_PTR->MODER &= ~((3 << (10*2)) | (3 << (11*2)));
 	  // Set to Alternate Function Mode (10)
 	  GPIOB_PTR->MODER |=  ((2 << (10*2)) | (2 << (11*2)));
 
-	  // Set Alternate Function to AF7 (USART3)
+	  // Set Alternate Function to AF8 (LPUART1)
 	  // PB10, PB11 are in AFRH). PB10 is bits [11:8], PB11 is bits [15:12]
 	  GPIOB_PTR->AFRH &= ~((0xF << 8) | (0xF << 12)); // Clear old settings
-	  GPIOB_PTR->AFRH |=  ((0x7 << 8) | (0x7 << 12)); // Set AF7 (0111)
+	  GPIOB_PTR->AFRH |=  ((0x8 << 8) | (0x8 << 12)); // Set AF7 (0111)
 
-	  // Set Baud Rate to 38400 (HC-05 Default)
-	  // Formula: F_clk / Baud. F_clk is 4MHz.
-	  // 4,000,000 / 38400 ~= 104.16. Round to 104.
-	  USART3->BRR = 104;
+	  // LPUART clock = 4MHz (assuming MSI). Target = 38400.
+	  // LPUART_BRR = (256 * F_clk) / Baud
+	  // (256 * 4,000,000) / 38400 = 26666.6 -> 26667
+	  LPUART1->BRR = 26667;
 
-	  // Enable RX Interrupt (RXNEIE)
-	  USART3->CR1 |= (1 << 5);
+	  /// Bit 2 = RE (Receiver Enable)
+	    // Bit 5 = RXNEIE (RX Not Empty Interrupt Enable)
+	  // Bit 3 = TE (Sender Enable)
+	    // Bit 0 = UE (LPUART Enable)
+	  LPUART1->CR1 |= (1 << 2) | (1 << 5) | (1 << 3) | (1 << 0);
 
-	  // Enable UART (TE=1, RE=1, UE=1)
-	  USART3->CR1 |= (1 << 3) | (1 << 2) | (1 << 0);
-
-	  // Enable USART3 Interrupt in NVIC
-	  // IRQ 63. 63 - 32 = 31. It is Bit 31 of ISER1.
-	  NVIC_ISER1 |= (1 << 31);
+	  // Enable LPUART Interrupt in NVIC
+	  ISER2 |= (1 << 2);
  }
 
 
@@ -733,9 +770,9 @@ void init_vibration_sensor(void) {
                   g_acceleration_pattern_threshold += g_uart_buffer[i+1] - '0';
                   i++;
               }
-              USART3_transmit_string("Threshold Changed To:");
-              USART3_transmit_string(&g_uart_buffer[1]);
-              USART3_transmit_string("\r\n");
+              LPUART1_transmit_string("Threshold Changed To:");
+              LPUART1_transmit_string(&g_uart_buffer[1]);
+              LPUART1_transmit_string("\r\n");
               
           }
 
@@ -750,9 +787,9 @@ void init_vibration_sensor(void) {
                   i++;
               }
               g_current_password[i] = '\0'; // Null terminate the new password
-              USART3_transmit_string("Password Changed To:");
-			  USART3_transmit_string(&g_uart_buffer[1]);
-              USART3_transmit_string("\r\n");
+              LPUART1_transmit_string("Password Changed To:");
+              LPUART1_transmit_string(&g_uart_buffer[1]);
+              LPUART1_transmit_string("\r\n");
           }
 
           // --- COMMAND: Read Acceleration Threshold Value ('R') ---
@@ -777,9 +814,9 @@ void init_vibration_sensor(void) {
               }
 
               // Transmit the result and a carriage return for formatting
-              USART3_transmit_string("New Threshold:");
-              USART3_transmit_string(&tx_buffer[i]); // Transmit the number
-              USART3_transmit_string("\r\n");
+              LPUART1_transmit_string("New Threshold:");
+              LPUART1_transmit_string(&tx_buffer[i]); // Transmit the number
+              LPUART1_transmit_string("\r\n");
           }
 
           // --- RESET BUFFER LOGIC ---
@@ -1044,7 +1081,7 @@ void init_vibration_sensor(void) {
 						 update_system_leds(g_is_alarm_enabled); // Restore normal LED state
 					 }
         		 }
-        		 else {
+        		 else if (!g_buzzer_active){
             		 ADC1->CR |= (1 << 2);
         		 }
         	 }
@@ -1163,24 +1200,39 @@ void TIM15_IRQHandler(void) {
 
 
 /**
- * @brief PI 3: Transmit a null-terminated string over USART3.
+ * @brief FINAL PRESENTATIION: Transmit a null-terminated string over LPUART1.
  * @param str The null-terminated string to transmit.
  */
-void USART3_transmit_string(const char *str) {
-    for (int i = 0; str[i] != '\0'; i++) {
-         while (!(USART3->ISR & (1 << 7)));
-        // Write data to the Transmit Data Register (TDR)
-        USART3->TDR = str[i];
-    }
+void LPUART1_transmit_string(const char *str) {
+	int i = 0;
+	while (str[i] != '\0') {
+		// Calculate next head position
+		int next_head = (tx_head + 1) % TX_BUFFER_SIZE;
+
+		// Check if buffer is full
+		if (next_head != tx_tail) {
+			tx_buffer[tx_head] = str[i];
+			tx_head = next_head;
+		} else {
+			// Buffer overflow handling:
+			// Option A: Drop character (safest for real-time)
+			// Option B: Busy wait (defeats the purpose, but prevents data loss)
+		}
+		i++;
+	}
+
+	// Enable Transmission Interrupt (TXEIE)
+	// This will trigger the ISR immediately if the hardware is ready to send.
+	LPUART1->CR1 |= (1 << 7);
 }
 
 
-// PI 3: USART3 Interrupt Handler (Bluetooth Data)
-void USART3_IRQHandler(void) {
+// FINAL PRESENTATION: Change USART3 to LPUART Interrupt Handler (Bluetooth Data)
+void LPUART1_IRQHandler(void) {
     // Check if Read Data Register is Not Empty (RXNE)
-    if (USART3->ISR & (1 << 5)) {
+    if (LPUART1->ISR & (1 << 5)) {
         // Read data (this clears the flag)
-        char data = (char)USART3->RDR;
+        char data = (char)LPUART1->RDR;
 
         // Only process if the Main Loop has finished the previous command
         if (!g_command_ready) {
@@ -1198,6 +1250,18 @@ void USART3_IRQHandler(void) {
                 
             }
         }
+    }
+    // check whether the sending fifo is available
+    if ((LPUART1->ISR & (1 << 7)) && (LPUART1->CR1 & (1 << 7))) {
+		if (tx_head != tx_tail) {
+			// There is data in the buffer to send
+			LPUART1->TDR = tx_buffer[tx_tail];
+			tx_tail = (tx_tail + 1) % TX_BUFFER_SIZE;
+		} else {
+			// Buffer is empty, we are done sending.
+			// Disable the interrupt so it doesn't loop forever.
+			LPUART1->CR1 &= ~(1 << 7);
+		}
     }
 }
 
