@@ -45,7 +45,7 @@
  * 3. Once the buffer is full, the pattern is calculated. This is basically a statistical variance calculation
  * 4. If the variance is above a threshold, the alarm is sounded.
  * 5. Other alarm logic is the same. Entering password disables it.
- * 
+ *
  * PI3 Bluetooth Logic:
  * 1. USART3 data is checked by an interrupt.
  * 2. The values taken are written to a buffer.
@@ -75,7 +75,7 @@
 
 
  // The number of vibration pulses required to trigger the monitoring state within the reset interval
- #define VIBRATION_PULSE_THRESHOLD 50
+ #define VIBRATION_PULSE_THRESHOLD 1
 
  // The time interval in seconds after which vibration count is reset
  #define VIBRATION_RESET_INTERVAL_S 1
@@ -84,7 +84,7 @@
  #define ACCELERATION_WINDOW_SIZE 20
 
  // The threshold for the computed acceleration pattern value to trigger the alarm
- #define INITIAL_ACCELERATION_PATTERN_THRESHOLD 28000.0f
+ #define INITIAL_ACCELERATION_PATTERN_THRESHOLD 100000
 
  // Interval in milliseconds between accelerometer readings in monitoring mode
  #define ACCELEROMETER_READ_INTERVAL_MS 200
@@ -93,16 +93,12 @@
  #define VIBRATION_INTERVAL_BUFFER_SIZE 200
 
  // Threshold for vibration frequency irregularity to trigger monitoring (higher = more irregular)
- #define VIBRATION_IRREGULARITY_THRESHOLD 0.6f
+ #define VIBRATION_IRREGULARITY_THRESHOLD 1
 
 
  //=============================================================================
  // PI 1&2&3: BARE-METAL REGISTER DEFINITIONS
  //=============================================================================
-
- // For handling floats
-#define CPACR_BASE 0xE000ED88
-#define CPACR (*((volatile uint32_t *) CPACR_BASE))
 
  // --- RCC (Clock Control) Registers ---
  // Base: 0x4002 1000
@@ -352,7 +348,7 @@ typedef struct {
 
  volatile uint8_t adc_seq_index = 0;
  volatile uint32_t adc_tick_counter = 0;
- volatile float g_acceleration_pattern_threshold = INITIAL_ACCELERATION_PATTERN_THRESHOLD;
+ volatile uint32_t g_acceleration_pattern_threshold = INITIAL_ACCELERATION_PATTERN_THRESHOLD;
 // PI3 Additions End.
 
 
@@ -394,7 +390,7 @@ typedef struct {
  int g_vibration_timestamp_index = 0;
 
  // Computed irregularity value from vibration pulse intervals
- float g_vibration_irregularity = 0.0f;
+ uint32_t g_vibration_irregularity = 0;
 
  // Number of valid entries in the vibration timestamp buffer (0 to VIBRATION_INTERVAL_BUFFER_SIZE)
  int g_vibration_timestamp_count = 0;
@@ -412,7 +408,7 @@ typedef struct {
  int g_acceleration_window_count = 0;
 
  // The computed pattern value from the acceleration window
- float g_acceleration_pattern_value = 0.0f;
+ uint32_t g_acceleration_pattern_value = 0;
 
  // Stores the raw 3-axis data from the accelerometer
  AccelerometerData g_raw_accel_data = {0, 0, 0};
@@ -427,7 +423,7 @@ typedef struct {
  // Flag to track if buzzer is currently high pitch or low pitch
  bool high = false;
 
- // PI3 Additions 
+ // PI3 Additions
  // --- Bluetooth / Command Globals ---
   #define UART_BUFFER_SIZE 15
   volatile char g_uart_buffer[UART_BUFFER_SIZE];
@@ -760,14 +756,13 @@ void init_vibration_sensor(void) {
 
           // --- COMMAND: Read Acceleration Threshold Value) ---
           if (g_uart_buffer[0] == 'A') {
-              g_acceleration_pattern_threshold = 0.0;
+              g_acceleration_pattern_threshold = 0;
               // The value starts at index 1 (after 'P')
               int i = 0;
               // Safety check: ensure we don't overflow the password buffer
               // g_uart_buffer is already null terminated by the ISR
               while (g_uart_buffer[i+1] != '\0' && i < PASSWORD_BUFFER_SIZE - 1) {
-                  g_acceleration_pattern_threshold *= 10.0;
-                  g_acceleration_pattern_threshold += g_uart_buffer[i+1] - '0';
+            	  g_acceleration_pattern_threshold = g_acceleration_pattern_threshold * 10 + (g_uart_buffer[i+1] - '0');
                   i++;
               }
               LPUART1_transmit_string("Threshold Changed To:");
@@ -794,15 +789,14 @@ void init_vibration_sensor(void) {
 
           // --- COMMAND: Read Acceleration Threshold Value ('R') ---
           else if (g_uart_buffer[0] == 'R') {
-               
-              // Convert the float to an integer string representation
+
               int int_threshold = (int)g_acceleration_pattern_threshold;
-              
+
               // Use a temporary buffer to hold the ASCII digits
               char tx_buffer[12]; // Buffer large enough for a 32-bit int
               int i = 10;
               tx_buffer[i] = '\0'; // Null-terminate at the end
-              
+
               // Convert integer to ASCII string (reversed)
               if (int_threshold == 0) {
                   tx_buffer[--i] = '0';
@@ -834,39 +828,34 @@ void init_vibration_sensor(void) {
 
  // (PI 3): Computes a pattern value from the raw acceleration window data
  // We calculate the statistical variation of x and y acceleration measurements.
- float compute_acceleration_pattern(void) {
+ uint32_t compute_acceleration_pattern(void) {
+     int32_t mean_x = 0, mean_y = 0;
 
-	 uint32_t sum_x = 0;
-	 uint32_t sum_y = 0;
-	 float sum_square_deviations_x = 0.0;
-	 float sum_square_deviations_y = 0.0;
-	 for (int i = 0; i < ACCELERATION_WINDOW_SIZE - 1; i++) {
-		 sum_x += g_acceleration_window[i].x;
-		 sum_y += g_acceleration_window[i].y;
-	 }
-	 float mean_x = sum_x / ACCELERATION_WINDOW_SIZE;
-	 float mean_y = sum_y / ACCELERATION_WINDOW_SIZE;
-	 for (int i = 0; i < ACCELERATION_WINDOW_SIZE - 1; i++) {
-	 		 float deviation_x = g_acceleration_window[i].x - mean_x;
-	 		 sum_square_deviations_x += deviation_x * deviation_x;
-	 		float deviation_y = g_acceleration_window[i].y - mean_y;
-			 sum_square_deviations_y += deviation_y * deviation_y;
-	 	 }
+     for (int i = 0; i < ACCELERATION_WINDOW_SIZE; i++) {
+         mean_x += g_acceleration_window[i].x;
+         mean_y += g_acceleration_window[i].y;
+     }
 
+     mean_x /= ACCELERATION_WINDOW_SIZE;
+     mean_y /= ACCELERATION_WINDOW_SIZE;
 
-	 float variance_x = sum_square_deviations_x / ACCELERATION_WINDOW_SIZE;
-	 float variance_y = sum_square_deviations_y / ACCELERATION_WINDOW_SIZE;
+     uint32_t x_dev = 0;
+     uint32_t y_dev = 0;
+     for (int i = 0; i < ACCELERATION_WINDOW_SIZE; i++) {
+         x_dev += abs(g_acceleration_window[i].x - mean_x);
+         y_dev += abs(g_acceleration_window[i].y - mean_y);
+     }
 
-
-     return variance_x + variance_y; // Mock pattern value
+     return y_dev;
  }
 
 
+
  // PI 2: Timestamp-based sliding window vibration detection
- float compute_vibration_irregularity(void) {
+ uint8_t compute_vibration_irregularity(void) {
 
     if (g_vibration_timestamp_count < VIBRATION_PULSE_THRESHOLD) {
-        return 0.0f;
+        return 0;
     }
     // Most recent pulse timestamp
     uint32_t latest = g_vibration_timestamps[
@@ -893,7 +882,7 @@ void init_vibration_sensor(void) {
     }
 
     // Trigger if enough pulses occur in the window
-    return pulses >= VIBRATION_PULSE_THRESHOLD ? 1.0f : 0.0f;
+    return pulses >= VIBRATION_PULSE_THRESHOLD ? 2 : 0;
 }
 
 
@@ -961,7 +950,7 @@ void init_vibration_sensor(void) {
   /**
    *  PI 1&2: Processes keypad input, buffers keys, and checks password.
    * This is the core logic for PI 1, matching the project flowchart.
-   * PI3: Changes were made to remove busy waits for the debouncing. 
+   * PI3: Changes were made to remove busy waits for the debouncing.
    * Now we have a keypad state machine for handling the debouncing.
    */
   void process_keypad_input_with_password(void) {
@@ -1247,7 +1236,7 @@ void LPUART1_IRQHandler(void) {
                 if (g_uart_index < (UART_BUFFER_SIZE - 1)) {
                     g_uart_buffer[g_uart_index++] = data;
                 }
-                
+
             }
         }
     }
@@ -1270,8 +1259,6 @@ void LPUART1_IRQHandler(void) {
  //=============================================================================
 
  int main() {
-	 CPACR |= (0xF <<20);
-
 	 __asm volatile ("CPSID i");
      // --- PI 1&2: Initialize Hardware ---
      init_keypad();         // PI 1: Init Keypad (GPIOF)
