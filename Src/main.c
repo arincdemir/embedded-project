@@ -387,13 +387,13 @@ typedef struct {
  uint32_t g_vibration_timestamps[VIBRATION_INTERVAL_BUFFER_SIZE] = {0};
 
  // Current index in the vibration timestamp buffer
- int g_vibration_timestamp_index = 0;
+ int volatile g_vibration_timestamp_index = 0;
 
  // Computed irregularity value from vibration pulse intervals
  uint32_t g_vibration_irregularity = 0;
 
  // Number of valid entries in the vibration timestamp buffer (0 to VIBRATION_INTERVAL_BUFFER_SIZE)
- int g_vibration_timestamp_count = 0;
+ int volatile g_vibration_timestamp_count = 0;
 
  // Timer for accelerometer reading intervals
  uint32_t g_accelerometer_timer_ms = 0;
@@ -402,7 +402,7 @@ typedef struct {
  AccelerometerData g_acceleration_window[ACCELERATION_WINDOW_SIZE] = {{0, 0, 0}};
 
  // Current index in the acceleration sliding window array
- int g_acceleration_window_index = 0;
+ int volatile g_acceleration_window_index = 0;
 
  // Number of valid entries in the acceleration window (0 to ACCELERATION_WINDOW_SIZE)
  int g_acceleration_window_count = 0;
@@ -411,7 +411,7 @@ typedef struct {
  uint32_t g_acceleration_pattern_value = 0;
 
  // Stores the raw 3-axis data from the accelerometer
- AccelerometerData g_raw_accel_data = {0, 0, 0};
+ AccelerometerData volatile g_raw_accel_data = {0, 0};
 
  // Stores the latest reading from the acceleration sensor
  int g_acceleration_value = 0;
@@ -822,8 +822,10 @@ void init_vibration_sensor(void) {
 
  // (PI 3): Adds new raw acceleration data to the sliding window
  void add_acceleration_to_window(AccelerometerData accel_data) {
-	 g_acceleration_window[g_acceleration_window_index] = accel_data;
-     g_acceleration_window_index++;
+	 if(g_acceleration_window_index < ACCELERATION_WINDOW_SIZE) {
+		g_acceleration_window[g_acceleration_window_index] = accel_data;
+		g_acceleration_window_index++;
+	 }
  }
 
  // (PI 3): Computes a pattern value from the raw acceleration window data
